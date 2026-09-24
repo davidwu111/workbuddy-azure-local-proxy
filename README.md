@@ -113,10 +113,10 @@ To start the bridge manually, open PowerShell in the workspace folder and run th
 To start it automatically when you sign in to Windows:
 
 1. Open **Task Scheduler** and choose **Create Task**.
-2. On **General**, name the task `Azure OpenAI Responses Bridge`. Select **Run only when user is logged on** so it uses your account to read `.env` and write the log.
+2. On **General**, name the task `Azure OpenAI Responses Bridge`. Select **Run whether user is logged on or not** and use the Windows account that owns the workspace. Windows may ask for that account's password when you save. This runs the task non-interactively, without opening a terminal window; that account must be able to read `.env` and write the log in the workspace.
 3. On **Triggers**, add **At log on** for your Windows account.
-4. On **Actions**, add **Start a program**. Set **Program/script** to your Node 22 executable (for the managed installation shown above: `%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-3\node.exe`). Set **Add arguments** to the full path of `bridge.js`, and **Start in** to the workspace folder, for example `C:\Users\<your-user>\azure-bridge`.
-5. Save the task. Use **Run** in Task Scheduler to test it, then check `http://127.0.0.1:8787/healthz`. The task has not been created by this project setup. The bridge runs in the background while you are signed in; end it from Task Scheduler or stop its `node.exe` process.
+4. On **Actions**, add **Start a program**. Set **Program/script** to the full path of your Node 22 executable (for the managed installation shown above, resolve `%USERPROFILE%` to your actual user folder, for example `C:\Users\<your-user>\.workbuddy\binaries\node\versions\22.22.2-3\node.exe`). Set **Add arguments** to the full path of `bridge.js`, and **Start in** to the workspace folder, for example `C:\Users\<your-user>\azure-bridge`.
+5. Save the task. Use **Run** in Task Scheduler to test it, then check `http://127.0.0.1:8787/healthz` and the task's **Last Run Result**. The task has not been created by this project setup. End it from Task Scheduler when needed; the bridge writes operational logs to `bridge.log` in the workspace.
 
 Use the actual paths on your machine. The bridge reads `.env` from its own folder, writes logs there, and listens only on `127.0.0.1`.
 
@@ -239,9 +239,9 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/models
 如需登录 Windows 后自动启动：
 
 1. 打开「任务计划程序」，选择「创建任务」。
-2. 在「常规」中将任务命名为 `Azure OpenAI Responses Bridge`，选择「只在用户登录时运行」，以便任务使用你的账户读取 `.env` 并写入日志。
+2. 在「常规」中将任务命名为 `Azure OpenAI Responses Bridge`，选择「不管用户是否登录都要运行」，并使用拥有该工作区的 Windows 账户。保存时 Windows 可能会要求输入该账户的密码。此选项会以非交互方式运行任务，不会弹出终端窗口；该账户必须能够读取 `.env` 并在工作区写入日志。
 3. 在「触发器」中添加「登录时」，并选择你的 Windows 账户。
-4. 在「操作」中添加「启动程序」。「程序或脚本」填写 Node 22 可执行文件路径（对于上文的托管安装：`%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-3\node.exe`）；「添加参数」填写 `bridge.js` 的完整路径；「起始于」填写工作区目录，例如 `C:\Users\<your-user>\azure-bridge`。
-5. 保存任务后，在任务计划程序中手动运行一次，并检查 `http://127.0.0.1:8787/healthz`。本项目尚未创建该任务。登录期间代理会在后台运行；可在任务计划程序中结束任务，或停止对应的 `node.exe` 进程。
+4. 在「操作」中添加「启动程序」。「程序或脚本」填写 Node 22 可执行文件的完整路径（对于上文的托管安装，请将 `%USERPROFILE%` 换成实际用户目录，例如 `C:\Users\<your-user>\.workbuddy\binaries\node\versions\22.22.2-3\node.exe`）；「添加参数」填写 `bridge.js` 的完整路径；「起始于」填写工作区目录，例如 `C:\Users\<your-user>\azure-bridge`。
+5. 保存任务后，在任务计划程序中手动运行一次，并检查 `http://127.0.0.1:8787/healthz` 和任务的「上次运行结果」。本项目尚未创建该任务。需要停止时，可在任务计划程序中结束任务；代理的运行日志写入工作区的 `bridge.log`。
 
 请替换为本机实际路径。代理从自身所在目录读取 `.env` 并写入日志，且仅监听 `127.0.0.1`。
