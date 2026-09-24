@@ -43,6 +43,8 @@ $node = "$env:USERPROFILE\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
 
 Or run `node .\bridge.js` if Node 22 is on `PATH`. Stop the foreground process with `Ctrl+C`.
 
+From the workspace folder, run `.\start-bridge.ps1`. The launcher selects the managed Node 22 installation above (or Node 22+ on `PATH`), checks whether the bridge is already healthy, and keeps the process in the current window. A desktop shortcut named **Azure OpenAI Responses Bridge** is also available for this Windows profile; double-click it to start the bridge. Press `Ctrl+C` in its window to stop a newly launched process.
+
 The bridge writes operational events to the console and `bridge.log`; when the log reaches 10 MiB, it rotates to `bridge.log.old`. It does not intentionally log request bodies, tool arguments, or credentials.
 
 ## Check It
@@ -168,6 +170,8 @@ $node = "$env:USERPROFILE\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
 ```
 
 如果 Node 22 已在 `PATH` 中，也可以直接运行 `node .\bridge.js`。用 `Ctrl+C` 停止前台进程。
+
+也可以在工作区目录下运行 `.\start-bridge.ps1` 启动。启动脚本会优先使用上文所述的托管版 Node 22（或 `PATH` 中的 Node 22 及更新版本），并检查代理是否已经正常运行，避免重复启动。当前 Windows 用户的桌面上也有名为 **Azure OpenAI Responses Bridge** 的快捷方式；双击即可启动代理。在快捷方式打开的窗口中按 `Ctrl+C`，可停止由该窗口新启动的代理进程。
 
 代理会把运行事件写入控制台和 `bridge.log`；日志达到 10 MiB 时轮转为 `bridge.log.old`。代理不会主动记录请求体、工具参数或凭据。
 
