@@ -1,5 +1,9 @@
 # Azure OpenAI Responses Bridge
 
+For a Debian/Linux LAN deployment, see **[LINUX.md](LINUX.md)**. This page
+covers the original Windows-local setup; Linux users should set their own LAN
+IP instead of copying an address from another installation.
+
 A small Windows-local proxy that accepts OpenAI Chat Completions requests from WorkBuddy, converts them to Azure OpenAI Responses API requests, and converts responses back to Chat Completions format. It uses Node.js built-ins only and listens on `127.0.0.1`.
 
 ## Requirements
@@ -125,6 +129,9 @@ Use the actual paths on your machine. The bridge reads `.env` from its own folde
 ---
 
 # 中文说明
+
+Linux/Debian 局域网部署请参阅 **[LINUX.md](LINUX.md)**（英文）。本页主要说明原有的
+Windows 本机用法；Linux 用户需填写自己主机的局域网 IP。
 
 ## 项目简介
 

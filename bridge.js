@@ -1,6 +1,7 @@
 "use strict";
 
 const http = require("node:http");
+const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -13,13 +14,15 @@ try {
 }
 
 const CONFIG = {
-  host: "127.0.0.1",
+  host: process.env.BRIDGE_HOST || "127.0.0.1",
   port: Number(process.env.BRIDGE_PORT || 8787),
+  tlsCert: process.env.BRIDGE_TLS_CERT || "",
+  tlsKey: process.env.BRIDGE_TLS_KEY || "",
   azureBase: process.env.AZURE_OPENAI_BASE || "",
   azureApiKey: process.env.AZURE_OPENAI_API_KEY || "",
   proxyToken: process.env.BRIDGE_PROXY_TOKEN || "",
   defaultModel: process.env.AZURE_OPENAI_MODEL || "gpt-6-luna",
-  logPath: path.join(__dirname, "bridge.log"),
+  logPath: process.env.BRIDGE_LOG_PATH || path.join(__dirname, "bridge.log"),
   maxBodyBytes: 1024 * 1024,
   maxSseEventBytes: 1024 * 1024,
   maxLogBytes: 10 * 1024 * 1024,
@@ -667,37 +670,47 @@ async function handleChatCompletion(req, res, url) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  let pathname = "/";
-  try {
-    pathname = new URL(req.url, `http://${CONFIG.host}:${CONFIG.port}`).pathname;
-    if (req.method === "GET" && pathname === "/healthz") {
-      sendJson(res, 200, { status: "ok" });
-      return;
+if (Boolean(CONFIG.tlsCert) !== Boolean(CONFIG.tlsKey)) {
+  throw new Error("Both BRIDGE_TLS_CERT and BRIDGE_TLS_KEY must be configured for HTTPS");
+}
+if (CONFIG.host !== "127.0.0.1" && CONFIG.host !== "::1" &&
+    (!CONFIG.proxyToken || !CONFIG.azureApiKey || !CONFIG.azureBase)) {
+  throw new Error("LAN mode requires BRIDGE_PROXY_TOKEN, AZURE_OPENAI_API_KEY, and AZURE_OPENAI_BASE");
+}
+const server = (CONFIG.tlsCert ? https : http).createServer(
+  CONFIG.tlsCert ? { cert: fs.readFileSync(CONFIG.tlsCert), key: fs.readFileSync(CONFIG.tlsKey) } : {},
+  async (req, res) => {
+    let pathname = "/";
+    try {
+      pathname = new URL(req.url, "http://bridge.invalid").pathname;
+      if (req.method === "GET" && pathname === "/healthz") {
+        sendJson(res, 200, { status: "ok" });
+        return;
+      }
+      if (req.method === "GET" && pathname === "/v1/models") {
+        sendJson(res, 200, {
+          object: "list",
+          data: [{ id: CONFIG.defaultModel, object: "model", created: serverStartedAt, owned_by: "azure" }],
+        });
+        return;
+      }
+      if (req.method === "POST" && pathname === "/v1/chat/completions") {
+        await handleChatCompletion(req, res);
+        return;
+      }
+      sendJson(res, 404, openAiError("Not found", "invalid_request_error"));
+    } catch (error) {
+      sendJson(res, error.status || 500, openAiError(error.message || "Internal proxy error", "proxy_error"));
+    } finally {
+      log("request", { method: req.method, path: pathname, status: res.statusCode });
     }
-    if (req.method === "GET" && pathname === "/v1/models") {
-      sendJson(res, 200, {
-        object: "list",
-        data: [{ id: CONFIG.defaultModel, object: "model", created: serverStartedAt, owned_by: "azure" }],
-      });
-      return;
-    }
-    if (req.method === "POST" && pathname === "/v1/chat/completions") {
-      await handleChatCompletion(req, res);
-      return;
-    }
-    sendJson(res, 404, openAiError("Not found", "invalid_request_error"));
-  } catch (error) {
-    sendJson(res, error.status || 500, openAiError(error.message || "Internal proxy error", "proxy_error"));
-  } finally {
-    log("request", { method: req.method, path: pathname, status: res.statusCode });
-  }
-});
+  },
+);
 
 server.requestTimeout = CONFIG.requestTimeoutMs;
 server.headersTimeout = 15_000;
 server.listen(CONFIG.port, CONFIG.host, () => {
-  log("listening", { host: CONFIG.host, port: CONFIG.port });
+  log("listening", { host: CONFIG.host, port: CONFIG.port, protocol: CONFIG.tlsCert ? "https" : "http" });
 });
 server.on("error", (error) => {
   log("server_error", { message: error.message, code: error.code });

@@ -52,6 +52,10 @@ before(async () => {
     env: {
       ...process.env,
       BRIDGE_PORT: String(bridgePort),
+      BRIDGE_HOST: "127.0.0.1",
+      BRIDGE_TLS_CERT: "",
+      BRIDGE_TLS_KEY: "",
+      BRIDGE_LOG_PATH: process.platform === "win32" ? "NUL" : "/dev/null",
       BRIDGE_PROXY_TOKEN: proxyToken,
       AZURE_OPENAI_API_KEY: "test-azure-key",
       AZURE_OPENAI_BASE: `http://127.0.0.1:${upstreamPort}`,

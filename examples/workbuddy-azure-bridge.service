@@ -1,0 +1,23 @@
+[Unit]
+Description=WorkBuddy Azure OpenAI bridge (Linux)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Place this repository in %h/workbuddy-azure-local-proxy, or edit both paths.
+# Node must be on systemd's PATH (normally /usr/local/bin:/usr/bin).
+# For a user-local Node, replace /usr/bin/env node with the absolute path
+# shown by `readlink -f "$(command -v node)"` before enabling the unit.
+WorkingDirectory=%h/workbuddy-azure-local-proxy
+ExecStart=/usr/bin/env node %h/workbuddy-azure-local-proxy/bridge.js
+Environment=BRIDGE_LOG_PATH=/dev/null
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target
