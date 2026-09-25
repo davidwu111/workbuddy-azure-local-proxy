@@ -64,7 +64,7 @@ Run the local regression tests with:
 & $node --test .\bridge.test.js
 ```
 
-The tests use a local mock upstream and do not call Azure or require real credentials.
+The tests use a local mock upstream and do not call Azure or require real credentials. They cover authentication, non-streaming responses, tool calls, upstream errors, and streaming size limits. An Azure/WorkBuddy end-to-end check is still recommended before deployment. Upstream SSE events over 1 MiB are rejected with an error frame so a malformed stream cannot grow memory without bound.
 
 ## WorkBuddy Model Entry
 
@@ -192,7 +192,7 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/models
 & $node --test .\bridge.test.js
 ```
 
-测试使用本地模拟上游，不会调用 Azure，也不需要真实凭据。
+测试使用本地模拟上游，不会调用 Azure，也不需要真实凭据。测试覆盖鉴权、非流式响应、工具调用、上游错误和流式大小限制；部署前仍建议与 Azure 和 WorkBuddy 做端到端验证。超过 1 MiB 的上游 SSE 事件会以错误帧拒绝，避免异常流无限占用内存。
 
 ## WorkBuddy 模型配置
 

@@ -21,6 +21,7 @@ const CONFIG = {
   defaultModel: process.env.AZURE_OPENAI_MODEL || "gpt-6-luna",
   logPath: path.join(__dirname, "bridge.log"),
   maxBodyBytes: 1024 * 1024,
+  maxSseEventBytes: 1024 * 1024,
   maxLogBytes: 10 * 1024 * 1024,
   // Idle timeout for the upstream Azure request. Any received activity
   // (headers or stream bytes) re-arms it, so long streams are not cut off.
@@ -362,8 +363,16 @@ async function streamResponse(upstream, res, requestedModel, onActivity) {
   let sawFunctionCall = false;
   let finishReason = "stop";
   let buffer = "";
+  let bufferBytes = 0;
   let eventName = "";
   let dataLines = [];
+  let eventBytes = 0;
+
+  const checkSseSize = (bytes) => {
+    if (bytes > CONFIG.maxSseEventBytes) {
+      throw new Error("Azure SSE event exceeds 1 MiB");
+    }
+  };
 
   const chunk = (choice, usage) => ({
     id: chatId,
@@ -509,13 +518,17 @@ async function streamResponse(upstream, res, requestedModel, onActivity) {
     log("unknown_sse_event", { event: name });
   }
 
-  async function handleLine(line) {
+  async function handleLine(line, lineBytes) {
     if (line === "") {
       if (dataLines.length) await handleEvent(eventName, dataLines.join("\n"));
       eventName = "";
       dataLines = [];
+      eventBytes = 0;
       return;
     }
+    // Count raw bytes, including CRLF, rather than just decoded characters.
+    eventBytes += lineBytes;
+    checkSseSize(eventBytes);
     if (line.startsWith(":")) return;
     const separator = line.indexOf(":");
     const field = separator < 0 ? line : line.slice(0, separator);
@@ -530,28 +543,39 @@ async function streamResponse(upstream, res, requestedModel, onActivity) {
       const { value, done } = await reader.read();
       if (done) break;
       if (onActivity) onActivity();
-      buffer += decoder.decode(value, { stream: true });
+      const decoded = decoder.decode(value, { stream: true });
+      buffer += decoded;
+      bufferBytes += Buffer.byteLength(decoded, "utf8");
       let newline;
       while ((newline = buffer.indexOf("\n")) >= 0) {
         let line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
+        const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+        bufferBytes -= lineBytes;
         if (line.endsWith("\r")) line = line.slice(0, -1);
-        await handleLine(line);
+        await handleLine(line, lineBytes);
         if (terminal) break;
       }
+      if (!terminal) checkSseSize(eventBytes + bufferBytes);
     }
     if (!terminal) {
-      buffer += decoder.decode();
-      if (buffer) await handleLine(buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer);
+      const trailing = decoder.decode();
+      buffer += trailing;
+      bufferBytes += Buffer.byteLength(trailing, "utf8");
+      checkSseSize(eventBytes + bufferBytes);
+      if (buffer) await handleLine(buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer, bufferBytes);
       if (dataLines.length) await handleEvent(eventName, dataLines.join("\n"));
       if (!terminal) await fail(new Error("Azure SSE ended before a terminal response event"));
     }
   } catch (error) {
     if (!res.destroyed) await fail(error);
   } finally {
-    try {
-      reader.releaseLock();
-    } catch {}
+    if (terminal) {
+      try {
+        await reader.cancel();
+      } catch {}
+    }
+    reader.releaseLock();
   }
 }
 
