@@ -2,6 +2,36 @@
 
 This record describes **local synthetic validation**, not Azure or WorkBuddy acceptance. Official public documentation was fetched without authentication; no inference/API deployment calls, real credentials, WorkBuddy invocation, real tool execution or scheduled-task installation were used. The [real acceptance plan](<acceptance.md>) remains separately approval-gated and **NOT RUN**.
 
+## CI launcher hang fix (`adapter-v2.9`)
+
+The first GitHub Actions run passed syntax checks but failed all four Windows
+launcher tests with *"Isolated launcher test timed out"*. Root cause: the
+launcher's two `Invoke-RestMethod` loopback probes lacked `-UseBasicParsing`, so
+Windows PowerShell 5.1 engaged the IE DOM parser and stalled on a clean image
+during IE first-run configuration. System/web proxy auto-detection could stall
+the same way.
+
+Fixes:
+
+- both probes now pass `-UseBasicParsing` and the launcher clears
+  `[System.Net.WebRequest]::DefaultWebProxy` for its loopback-only checks
+- the test helper redirects child output to a file (pipes are unavailable in some
+  sandboxes) and, on timeout, kills the whole process tree and reports the
+  captured output instead of a bare "timed out"
+- per-test timeout raised to 120 s and the child guard to 60 s, so a slow CI
+  image fails loudly rather than silently
+- a static regression test asserts both probes keep `-UseBasicParsing`, a
+  2-second timeout and proxy bypass
+
+| Check | Result |
+|---|---|
+| Node **v24.20.0** full suite (incl. 4 Windows launcher tests) | **131/131 passed** |
+| Node **v22.22.2** full suite | **131/131 passed** |
+| Launcher AST parse | passed |
+
+Hosted-CI confirmation is still required; this was verified on the local Windows
+host only.
+
 ## Log rotation and retention (`adapter-v2.9`)
 
 Logging now rotates **daily** rather than only by size, and pruning is automatic:
@@ -58,8 +88,8 @@ Changes:
 
 | Follow-up check | Actual result |
 |---|---|
-| Node **v24.20.0** full `node run-offline-tests.cjs` | **130/130 passed** |
-| Node **v22.22.2** full `run-offline-tests.cjs` | **130/130 passed** |
+| Node **v24.20.0** full `node run-offline-tests.cjs` | **131/131 passed** |
+| Node **v22.22.2** full `run-offline-tests.cjs` | **131/131 passed** |
 | Syntax, changed modules, both runtimes | Passed |
 
 **Unresolved:** agent 2's failure had no specific error, and no bridge log entry

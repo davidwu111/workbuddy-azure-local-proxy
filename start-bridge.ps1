@@ -53,13 +53,17 @@ if ($summary.host -ne "127.0.0.1" -or $summary.port -lt 1 -or $summary.port -gt 
 if ($CheckOnly) { Write-Output $summaryText; return }
 
 $health = $null
-try { $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($summary.port)/healthz" -TimeoutSec 2 } catch { }
+# Loopback-only probes: never consult a system/web proxy (WPAD auto-detection can
+# stall for many seconds), and use basic parsing so the legacy IE DOM parser is
+# not engaged. Both matter on clean CI images without a configured IE profile.
+try { [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy } catch { }
+try { $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($summary.port)/healthz" -TimeoutSec 2 -UseBasicParsing } catch { }
 if ($health) {
     if ($health.service -ne $summary.service -or $health.protocol -ne $summary.protocol -or
         $health.build -ne $summary.build -or $health.configId -ne $summary.configId) {
         throw "This port answers with another service/build/configuration. Stop it explicitly before restarting; launcher will not replace it."
     }
-    $ready = Invoke-RestMethod -Uri "http://127.0.0.1:$($summary.port)/readyz" -TimeoutSec 2
+    $ready = Invoke-RestMethod -Uri "http://127.0.0.1:$($summary.port)/readyz" -TimeoutSec 2 -UseBasicParsing
     if ($ready.status -ne "ready") { throw "Bridge is live but not ready; it was not restarted." }
     Write-Host "Matching bridge is already ready at http://127.0.0.1:$($summary.port)."
     return

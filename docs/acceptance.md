@@ -12,7 +12,7 @@ An approval should name which rows below are authorized. Running the offline sui
 
 | Environment or behavior | Evidence status |
 |---|---|
-| Node 24.20.0 and 22.22.2 / Windows | Current isolated offline suites 130/130 each after the standards-first classification and WorkBuddy 5.8.3 metadata follow-up; syntax checks and launcher AST passed. This is not real acceptance; [validation record](<validation.md>) |
+| Node 24.20.0 and 22.22.2 / Windows | Current isolated offline suites 131/131 each after the standards-first classification and WorkBuddy 5.8.3 metadata follow-up; syntax checks and launcher AST passed. This is not real acceptance; [validation record](<validation.md>) |
 | Other Node 22/24 releases / Windows and Linux | CI matrix configured; hosted CI, Linux and other runtime execution not claimed |
 | Installed WorkBuddy version and wire fixtures | Not captured or verified |
 | Azure resource, region, deployment type, effective variant/version | Not queried or verified |

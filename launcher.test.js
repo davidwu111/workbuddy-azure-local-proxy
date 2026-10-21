@@ -5,9 +5,13 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
-const { spawn } = require("node:child_process");
+const fsSync = require("node:fs");
+const { spawn, spawnSync } = require("node:child_process");
 const { loadConfig } = require("./config");
 const windows = process.platform === "win32";
+// PowerShell startup plus two loopback probes is normally ~2 s; the margin covers
+// cold CI images. A hung child is reported with its captured output, not silently.
+const LAUNCHER_TIMEOUT_MS = 60000;
 function isolatedChildEnv() {
   const env = {};
   for (const name of ["SystemRoot", "WINDIR", "PATH", "Path", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "PSModulePath", "ProgramFiles", "ProgramFiles(x86)"]) {
@@ -15,14 +19,35 @@ function isolatedChildEnv() {
   }
   return env;
 }
+// Child output goes to a file rather than a pipe: the Windows sandbox forbids piped
+// stdio, and a file keeps a failure diagnosable. Timeout kills the whole tree so a
+// stalled PowerShell (or the node it started) cannot outlive the test.
 function runLauncher(file, checkOnly, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-      path.join(__dirname, "start-bridge.ps1"), "-NodePath", options.nodePath ?? process.execPath, "-EnvFile", file, ...(checkOnly ? ["-CheckOnly"] : [])],
-    { env: isolatedChildEnv(), cwd: options.cwd, stdio: "ignore" }); // No captured child pipes in the Windows sandbox.
-    const timer = setTimeout(() => { child.kill(); reject(new Error("Isolated launcher test timed out")); }, 20000);
-    child.once("error", error => { clearTimeout(timer); reject(error); });
-    child.once("exit", code => { clearTimeout(timer); resolve(code); });
+    const logFile = path.join(os.tmpdir(), `bridge-launcher-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
+    const outFd = fsSync.openSync(logFile, "w");
+    const target = path.join(__dirname, "start-bridge.ps1");
+    const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", target,
+      "-NodePath", options.nodePath ?? process.execPath, "-EnvFile", file, ...(checkOnly ? ["-CheckOnly"] : [])];
+    let child;
+    try {
+      child = spawn("powershell.exe", args, { env: isolatedChildEnv(), cwd: options.cwd, stdio: ["ignore", outFd, outFd] });
+    } catch (error) { fsSync.closeSync(outFd); reject(error); return; }
+    const readOutput = () => {
+      try { return fsSync.readFileSync(logFile, "utf8").slice(-2000); } catch { return ""; }
+    };
+    const cleanup = () => {
+      try { fsSync.closeSync(outFd); } catch {}
+      try { fsSync.rmSync(logFile, { force: true }); } catch {}
+    };
+    const timer = setTimeout(() => {
+      try { spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }); } catch {}
+      try { child.kill(); } catch {}
+      const output = readOutput(); cleanup();
+      reject(new Error(`Isolated launcher test timed out after ${LAUNCHER_TIMEOUT_MS} ms (pid ${child.pid}). Output: ${output || "<none>"}`));
+    }, LAUNCHER_TIMEOUT_MS);
+    child.once("error", error => { clearTimeout(timer); cleanup(); reject(error); });
+    child.once("exit", code => { clearTimeout(timer); cleanup(); resolve(code); });
   });
 }
 async function fixture(t, port = 8787) {
@@ -38,13 +63,24 @@ async function probe(t, responder) {
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
   return server.address().port;
 }
-test("Windows launcher uses the shared parser and explicit Node path with spaced fixture paths", { skip: !windows, timeout: 25000 }, async t => {
+test("launcher loopback probes use basic parsing and skip proxy auto-detection", () => {
+  // Regression guard: without -UseBasicParsing, Windows PowerShell 5.1 uses the IE
+  // DOM parser, which stalls on clean CI images during IE first-run configuration.
+  const source = fsSync.readFileSync(path.join(__dirname, "start-bridge.ps1"), "utf8");
+  const calls = source.match(/Invoke-RestMethod[^\n]*/g) || [];
+  assert.equal(calls.length, 2, "expected exactly two loopback probes");
+  for (const call of calls) assert.match(call, /-UseBasicParsing/);
+  assert.match(source, /DefaultWebProxy/);
+  assert.match(source, /-TimeoutSec 2/);
+});
+
+test("Windows launcher uses the shared parser and explicit Node path with spaced fixture paths", { skip: !windows, timeout: 120000 }, async t => {
   const file = await fixture(t);
   assert.equal(await runLauncher(file, true), 0);
   await fs.appendFile(file, "\nBRIDGE_PORT=8787oops\n");
   assert.notEqual(await runLauncher(file, true), 0);
 });
-test("Windows launcher rejects same-port impostors and older builds instead of starting/replacing them", { skip: !windows, timeout: 25000 }, async t => {
+test("Windows launcher rejects same-port impostors and older builds instead of starting/replacing them", { skip: !windows, timeout: 120000 }, async t => {
   let requests = 0, reply;
   const port = await probe(t, (_req, res) => { requests++; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(reply)); });
   const file = await fixture(t, port);
@@ -54,7 +90,7 @@ test("Windows launcher rejects same-port impostors and older builds instead of s
     assert.equal(requests, 1);
   }
 });
-test("Windows launcher resolves relative executable and env paths before its cwd shift", { skip: !windows, timeout: 25000 }, async t => {
+test("Windows launcher resolves relative executable and env paths before its cwd shift", { skip: !windows, timeout: 120000 }, async t => {
   const port = await probe(t, (_req, res) => { res.statusCode = 404; res.end(); });
   const file = await fixture(t, port); const temp = path.dirname(file);
   const shim = path.join(temp, "fixture node.ps1"); const captured = path.join(temp, "runtime args.json");
@@ -66,7 +102,7 @@ test("Windows launcher resolves relative executable and env paths before its cwd
   const args = JSON.parse((await fs.readFile(captured, "utf8")).replace(/^\uFEFF/, ""));
   assert.equal(args[args.indexOf("--env-file") + 1], file);
 });
-test("Windows launcher recognizes matching identity and checks readiness without restarting", { skip: !windows, timeout: 25000 }, async t => {
+test("Windows launcher recognizes matching identity and checks readiness without restarting", { skip: !windows, timeout: 120000 }, async t => {
   const paths = []; let summary;
   const port = await probe(t, (req, res) => { paths.push(req.url); res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ ...summary, status: req.url === "/readyz" ? "ready" : "ok" })); });
