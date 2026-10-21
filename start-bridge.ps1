@@ -1,69 +1,72 @@
+[CmdletBinding()]
+param(
+    [string]$NodePath = $env:BRIDGE_NODE,
+    [string]$EnvFile,
+    [switch]$NoEnvFile,
+    [switch]$CheckOnly
+)
 $ErrorActionPreference = "Stop"
-
 $projectRoot = $PSScriptRoot
 $bridgePath = Join-Path $projectRoot "bridge.js"
-$managedNode = Join-Path $env:USERPROFILE ".workbuddy\binaries\node\versions\22.22.2-3\node.exe"
-
-if (-not (Test-Path $bridgePath)) {
-    throw "bridge.js was not found in $projectRoot"
+if (-not (Test-Path -LiteralPath $bridgePath -PathType Leaf)) { throw "Bridge entrypoint not found." }
+if ($EnvFile -and $NoEnvFile) { throw "Choose -EnvFile or -NoEnvFile, not both." }
+# Resolve caller-relative paths once, before runtime changes its working directory.
+if ($EnvFile) {
+    if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) { throw "Explicit environment file not found." }
+    $EnvFile = (Resolve-Path -LiteralPath $EnvFile).ProviderPath
 }
 
-$nodePath = $null
-if (Test-Path $managedNode) {
-    $nodePath = $managedNode
+# Explicit override wins. Otherwise PATH, then discovered WorkBuddy-managed versions.
+if ($NodePath) {
+    if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { throw "Explicit Node executable not found." }
+    $NodePath = (Resolve-Path -LiteralPath $NodePath).ProviderPath
+    $candidates = @($NodePath)
 } else {
-    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
-    if ($nodeCommand) {
-        $nodePath = $nodeCommand.Source
+    $candidates = @()
+    $command = Get-Command node -ErrorAction SilentlyContinue
+    if ($command) { $candidates += $command.Source }
+    $versions = Join-Path $env:USERPROFILE ".workbuddy\binaries\node\versions"
+    if (Test-Path -LiteralPath $versions) {
+        $candidates += @(Get-ChildItem -LiteralPath $versions -Directory | Sort-Object LastWriteTime -Descending |
+            ForEach-Object { Join-Path $_.FullName "node.exe" } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     }
 }
-
-if (-not $nodePath) {
-    throw "Node.js 22 or newer was not found. Install it or add node.exe to PATH."
-}
-
-$nodeVersion = (& $nodePath --version).Trim()
-if ($nodeVersion -notmatch "^v?(\d+)\.") {
-    throw "Could not determine the Node.js version from '$nodeVersion'."
-}
-if ([int]$Matches[1] -lt 22) {
-    throw "Node.js 22 or newer is required; found $nodeVersion at $nodePath."
-}
-
-$port = 8787
-if ($env:BRIDGE_PORT) {
-    $port = [int]$env:BRIDGE_PORT
-} else {
-    $envPath = Join-Path $projectRoot ".env"
-    if (Test-Path $envPath) {
-        $portSetting = Get-Content $envPath | Where-Object { $_ -match '^\s*BRIDGE_PORT\s*=' } | Select-Object -Last 1
-        if ($portSetting -and $portSetting -match '^\s*BRIDGE_PORT\s*=\s*["'']?(\d+)') {
-            $port = [int]$Matches[1]
-        }
+$selectedNode = $null
+foreach ($candidate in $candidates) {
+    $nodeVersion = (& $candidate --version | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $nodeVersion -match '^v?(\d+)\.' -and [int]$Matches[1] -ge 22) {
+        $selectedNode = $candidate
+        break
     }
+    if ($NodePath) { throw "Explicit Node executable must be Node.js 22 or newer." }
 }
+if (-not $selectedNode) { throw "Node.js 22+ not found. Set BRIDGE_NODE, use -NodePath, or add node.exe to PATH." }
 
-try {
-    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 2
-    if ($health.status -eq "ok") {
-        Write-Host "Azure OpenAI Responses Bridge is already running at http://127.0.0.1:$port."
-        return
+# Node's own dotenv/config parser is shared by launcher and runtime. Never parse .env in PowerShell.
+$runtimeArgs = @($bridgePath)
+if ($NoEnvFile) { $runtimeArgs += "--no-env-file" }
+elseif ($EnvFile) { $runtimeArgs += @("--env-file", $EnvFile) }
+$summaryText = (& $selectedNode @runtimeArgs --check-config-json | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Configuration validation failed; no listener started. See migration guidance." }
+$summary = $summaryText | ConvertFrom-Json
+if ($summary.host -ne "127.0.0.1" -or $summary.port -lt 1 -or $summary.port -gt 65535) { throw "Invalid safe startup summary." }
+if ($CheckOnly) { Write-Output $summaryText; return }
+
+$health = $null
+try { $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($summary.port)/healthz" -TimeoutSec 2 } catch { }
+if ($health) {
+    if ($health.service -ne $summary.service -or $health.protocol -ne $summary.protocol -or
+        $health.build -ne $summary.build -or $health.configId -ne $summary.configId) {
+        throw "This port answers with another service/build/configuration. Stop it explicitly before restarting; launcher will not replace it."
     }
-} catch {
-    # No healthy bridge answered on this port; start it below.
+    $ready = Invoke-RestMethod -Uri "http://127.0.0.1:$($summary.port)/readyz" -TimeoutSec 2
+    if ($ready.status -ne "ready") { throw "Bridge is live but not ready; it was not restarted." }
+    Write-Host "Matching bridge is already ready at http://127.0.0.1:$($summary.port)."
+    return
 }
-
-if (-not (Test-Path (Join-Path $projectRoot ".env"))) {
-    Write-Warning "No .env file was found. Configure Azure credentials before sending requests."
-}
-
-Write-Host "Starting Azure OpenAI Responses Bridge with $nodeVersion. Press Ctrl+C to stop."
+Write-Host "Starting Azure Responses Bridge with $nodeVersion. Press Ctrl+C to stop."
 Push-Location $projectRoot
 try {
-    & $nodePath $bridgePath
-    if ($LASTEXITCODE -ne 0) {
-        throw "The bridge exited with code $LASTEXITCODE."
-    }
-} finally {
-    Pop-Location
-}
+    & $selectedNode @runtimeArgs
+    if ($LASTEXITCODE -ne 0) { throw "Bridge exited unsuccessfully (code $LASTEXITCODE)." }
+} finally { Pop-Location }
