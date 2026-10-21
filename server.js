@@ -1,5 +1,8 @@
 "use strict";
 const http = require("node:http");
+const https = require("node:https");
+const tls = require("node:tls");
+const fs = require("node:fs");
 const crypto = require("node:crypto");
 const { validateConfig } = require("./config");
 const { toResponsesRequest, extractResponse, ignoredClientFields } = require("./adapter");
@@ -7,7 +10,29 @@ const { safeRecord } = require("./logger");
 const { normalizeChatDefaults } = require("./chat-contract");
 const { validationDiagnostics } = require("./diagnostics");
 const { ByteStore, transportError, waitWithTimeout, readBoundedBody, SseWriter, streamResponse } = require("./sse");
-const SERVICE = "azure-responses-bridge", PROTOCOL = "chat-to-responses-v1", BUILD = "adapter-v2.9";
+const SERVICE = "azure-responses-bridge", PROTOCOL = "chat-to-responses-v1", BUILD = "adapter-v2.10-linux";
+function validateListenerTls(config) {
+  if (!config.tlsCert && !config.tlsKey) return undefined;
+  try {
+    if (!config.tlsCert || !config.tlsKey) throw new Error("Incomplete TLS configuration");
+    // Certificate/private-key reads happen at explicit startup, never on import.
+    const readPem = file => {
+      let fd;
+      try {
+        // A typo selecting a FIFO/device must not block config checks or startup.
+        fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+        const info = fs.fstatSync(fd);
+        if (!info.isFile() || info.size < 1 || info.size > 1024 * 1024) throw new Error("Invalid PEM file");
+        return fs.readFileSync(fd);
+      } finally { if (fd !== undefined) fs.closeSync(fd); }
+    };
+    const options = { cert: readPem(config.tlsCert), key: readPem(config.tlsKey), minVersion: "TLSv1.2" };
+    tls.createSecureContext(options);
+    return options;
+  } catch {
+    throw Object.assign(new Error("Invalid listener TLS configuration"), { code: "INVALID_CONFIG", param: "tls" });
+  }
+}
 function requestError(code, message, status) { return Object.assign(transportError(code, message, status), { type: "invalid_request_error", param: "body" }); }
 const SAFE_HEADERS = ["retry-after", "retry-after-ms", "x-ms-retry-after-ms", "x-request-id", "request-id", "apim-request-id"];
 function sendJson(res, status, value) {
@@ -108,7 +133,8 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
     const allowed = new Set((payload.tools || []).map(tool => tool.name));
     for (const item of response.output) if (item?.type === "function_call" && (payload.tool_choice === "none" || !allowed.has(item.name) || payload.tool_choice?.type === "function" && payload.tool_choice.name !== item.name)) throw transportError("undeclared_upstream_tool", "Upstream requested a function not allowed by this request");
   };
-  const server = http.createServer(async (req, res) => {
+  const tlsOptions = validateListenerTls(config);
+  const server = (tlsOptions ? https : http).createServer(tlsOptions ?? {}, async (req, res) => {
     const started = Date.now(), requestId = crypto.randomUUID();
     let path = "unmatched", outcome = "local_error", firstTokenMs, payload, alias, upstreamRequestId, usage, upstream, normalizedFields, finishReason;
     let controller, totalTimer, writer, entry, body, stage = "routing", validation = {}, bytesOut, queuedFor;
@@ -211,4 +237,4 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
   };
   return server;
 }
-module.exports = { SERVICE, PROTOCOL, BUILD, SAFE_HEADERS, createBridgeServer };
+module.exports = { SERVICE, PROTOCOL, BUILD, SAFE_HEADERS, createBridgeServer, validateListenerTls };

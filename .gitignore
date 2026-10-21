@@ -1,4 +1,6 @@
 .env
 bridge.log
 bridge.log.old
+bridge-*.log
+certs/
 .workbuddy

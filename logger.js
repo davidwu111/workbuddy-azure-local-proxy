@@ -1,5 +1,26 @@
 "use strict";
 const fs = require("node:fs/promises");
+const { constants } = require("node:fs");
+
+// No destination is touched on import or in console-only mode. Opening with
+// append preserves existing bytes; nonblocking/no-follow also prevents a FIFO
+// or symbolic-link target from becoming a startup hang or unintended write.
+async function validateLogPath(logPath) {
+  if (!logPath) return;
+  let handle;
+  try {
+    // Rotation must create/remove sibling entries even when the current file
+    // itself is appendable. Check obvious directory permission failures early.
+    await fs.access(require("node:path").dirname(logPath), constants.W_OK);
+    try { if (!(await fs.lstat(logPath)).isFile()) throw new Error("Not a regular file"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    handle = await fs.open(logPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT |
+      (constants.O_NONBLOCK || 0) | (constants.O_NOFOLLOW || 0), 0o600);
+    if (!(await handle.stat()).isFile()) throw new Error("Not a regular file");
+  } catch {
+    throw Object.assign(new Error("Log destination must be a writable regular file"), { code: "INVALID_CONFIG", param: "logPath" });
+  } finally { if (handle) await handle.close(); }
+}
 const { CHAT_REQUEST_FIELDS, WORKBUDDY_MESSAGE_FIELDS, SAFE_METADATA_KEY, sanitizeMetadataKey } = require("./chat-contract");
 const { STAGES, CODES, safeValidationParam } = require("./diagnostics");
 const NORMALIZED_FIELDS = new Set([...CHAT_REQUEST_FIELDS, "stream_options.include_usage", "stream_options.include_obfuscation", ...WORKBUDDY_MESSAGE_FIELDS.map(name => `messages.${name}`)]);
@@ -67,7 +88,7 @@ function isArchiveName(name, base, activeName) {
 }
 function createLogger({ logPath, maxLogBytes = 10 * 1024 ** 2, maxQueueBytes = 64 * 1024, stdout = process.stdout, secrets = [], retentionDays = 7, now = () => new Date() } = {}) {
   let queue = Promise.resolve(); let queuedBytes = 0; let dropped = 0; let closed = false; let consoleBlocked = false; let consoleFailed = false;
-  let lastDay = null, daySequence = 0, lastPrune = 0;
+  let lastDay = null, lastPrune = 0;
   const consoleDrain = () => { consoleBlocked = false; };
   const consoleError = () => { consoleFailed = true; };
   if (stdout && typeof stdout.on === "function") stdout.on("error", consoleError);
@@ -110,22 +131,38 @@ function createLogger({ logPath, maxLogBytes = 10 * 1024 ** 2, maxQueueBytes = 6
     queue = queue.then(async () => {
       const current = now();
       const day = dayStamp(current);
-      let size = 0;
-      try { size = (await fs.stat(logPath)).size; } catch (error) { if (error.code !== "ENOENT") throw error; }
-      const dayChanged = lastDay !== null && lastDay !== day;
+      let info;
+      try {
+        info = await fs.lstat(logPath);
+        if (!info.isFile()) throw new Error("Not a regular log destination");
+      } catch (error) { if (error.code !== "ENOENT") throw error; }
+      const size = info?.size || 0;
+      // A restarted process has no in-memory day state: recover it from the
+      // existing active file's last write, without reading any log contents.
+      const previousDay = lastDay ?? (size ? dayStamp(info.mtime) : day);
+      const dayChanged = previousDay !== day;
       const oversized = size > 0 && size + bytes > maxLogBytes;
-      if (dayChanged || oversized) {
-        // Archive under a dated name: the day that just ended, or today with a
-        // sequence when rotating purely for size. Paths derive from logPath only.
-        const stamp = dayChanged ? lastDay : day;
-        daySequence = dayChanged ? 0 : daySequence + 1;
-        const suffix = daySequence ? `.${daySequence}` : "";
-        const archive = `${archiveBase(logPath)}-${stamp}${suffix}.log`;
-        await fs.rm(archive, { force: true });
-        try { await fs.rename(logPath, archive); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (size > 0 && (dayChanged || oversized)) {
+        const stamp = dayChanged ? previousDay : day;
+        let sequence = dayChanged ? 0 : 1;
+        for (;;) {
+          const suffix = sequence ? `.${sequence}` : "";
+          const archive = `${archiveBase(logPath)}-${stamp}${suffix}.log`;
+          try {
+            // link is exclusive, unlike rename on POSIX. Existing archives
+            // survive restarts and collisions, including dangling symlinks.
+            await fs.link(logPath, archive);
+            await fs.unlink(logPath);
+            break;
+          } catch (error) {
+            if (error.code === "EEXIST") { sequence++; continue; }
+            if (error.code === "ENOENT") break;
+            throw error;
+          }
+        }
       }
       lastDay = day;
-      await fs.appendFile(logPath, line, "utf8");
+      await fs.appendFile(logPath, line, { encoding: "utf8", mode: 0o600 });
       // Retention work is bounded: at most once an hour per logger instance.
       if (current.getTime() - lastPrune > 3_600_000) { lastPrune = current.getTime(); await prune(current); }
     }).catch(() => { dropped++; }).finally(() => { queuedBytes -= bytes; });
@@ -136,4 +173,4 @@ function createLogger({ logPath, maxLogBytes = 10 * 1024 ** 2, maxQueueBytes = 6
   log.stats = () => ({ queuedBytes, dropped });
   return log;
 }
-module.exports = { createLogger, safeRecord, safeUsage, localTimestamp };
+module.exports = { createLogger, validateLogPath, safeRecord, safeUsage, localTimestamp };

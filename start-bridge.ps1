@@ -51,6 +51,7 @@ if ($LASTEXITCODE -ne 0) { throw "Configuration validation failed; no listener s
 $summary = $summaryText | ConvertFrom-Json
 if ($summary.host -ne "127.0.0.1" -or $summary.port -lt 1 -or $summary.port -gt 65535) { throw "Invalid safe startup summary." }
 if ($CheckOnly) { Write-Output $summaryText; return }
+if ($summary.transport -and $summary.transport -ne "http") { throw "This Windows launcher only probes loopback HTTP. Use Node directly for HTTPS; no listener was started." }
 
 $health = $null
 # Loopback-only probes: never consult a system/web proxy (WPAD auto-detection can

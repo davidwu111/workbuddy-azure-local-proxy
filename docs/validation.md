@@ -2,6 +2,61 @@
 
 This record describes **local synthetic validation**, not Azure or WorkBuddy acceptance. Official public documentation was fetched without authentication; no inference/API deployment calls, real credentials, WorkBuddy invocation, real tool execution or scheduled-task installation were used. The [real acceptance plan](<acceptance.md>) remains separately approval-gated and **NOT RUN**.
 
+## Linux branch integration (`adapter-v2.10-linux`)
+
+Integrated main tip `3a27007` into Linux tip `b52c775` (merge base `955b811`) on
+21 October 2026. The merge preserves Linux LAN binding, native HTTPS and the
+user systemd example while adopting the shared adapter/config/transport rewrite.
+This is an **uncommitted local merge**, not a pushed deployment or hosted-CI result.
+
+### Observed final checks on Windows
+
+| Runtime / check | Result |
+|---|---|
+| Node **v22.22.2**, complete in-process offline suite | **150 total, 146 passed, 0 failed, 4 skipped**; approximately 7.27 s |
+| Node **v24.20.0**, complete in-process offline suite | **150 total, 146 passed, 0 failed, 4 skipped**; approximately 7.13 s |
+| JavaScript/CommonJS syntax checks, both runtimes | passed for all root source/test files |
+| Windows launcher PowerShell AST | passed |
+| Working-tree and staged whitespace checks | passed; informational LF/CRLF warnings only |
+
+The four skipped tests are Linux-specific: binding only `127.0.0.2`, real
+foreground SIGINT and SIGTERM with an active upload/repeated signal, and rejecting
+an appendable active log in a read-only archive directory (also skipped for root).
+Linux-only FIFO/device and POSIX permission assertions inside other tests were
+not executed on Windows. **No Linux runtime/systemd execution is claimed.** WSL
+was not usable on this host (`Wsl/CallMsi/Install/REGDB_E_CLASSNOTREG`); no Linux
+runtime, persistent service or distribution was installed as a workaround.
+
+Observed HTTPS checks use the explicitly trusted public synthetic loopback
+[certificate fixtures](<../test-fixtures/tls/README.md>), not disabled certificate
+verification. Coverage includes health/readiness/model aliases, auth, nonstream
+and SSE conversion, one terminal DONE, untrusted certificate rejection, invalid
+and valid-but-mismatched key pairs, oversized/non-regular PEM rejection, and
+bounded shutdown of a socket that has not completed its TLS handshake.
+
+CLI subprocesses use isolated process environments, `--no-env-file` or temporary
+explicit fixtures, and temporary log/output destinations. No production dotenv,
+operational log, Azure credential or deployment certificate was read or changed.
+Logger regressions cover restart archive collisions, initial previous-day
+rotation, private new files, missing parents, and console-only behavior. The
+Windows launcher retains identity/path tests and now refuses plaintext probes
+for a configured HTTPS listener.
+
+Reproduction on the installed Windows runtimes:
+
+```powershell
+& 'C:\Users\yefan\.workbuddy\binaries\node\versions\22.22.2-6\node.exe' .\run-offline-tests.cjs
+& 'C:\Program Files\nodejs\node.exe' .\run-offline-tests.cjs
+```
+
+The existing Node 22/24 Ubuntu/Windows [CI matrix](<../.github/workflows/test.yml>)
+includes the new tests automatically. Hosted CI and actual Linux signal/binding/
+permission checks remain pending until this merge is committed and tested there.
+Real Azure/WorkBuddy acceptance remains separately authorized and **NOT RUN**.
+The [Linux upgrade/service guide](<../LINUX.md>) describes configuration migration,
+TLS trust, journal/file logging and restart instructions; those instructions were
+reviewed but not executed against a live service.
+
 ## Windows launcher path assertion follow-up (`adapter-v2.9`)
 
 The subsequent Windows CI failure reported a strict equality assertion in the

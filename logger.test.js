@@ -5,7 +5,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const { EventEmitter } = require("node:events");
-const { createLogger, safeRecord, localTimestamp } = require("./logger");
+const { createLogger, validateLogPath, safeRecord, localTimestamp } = require("./logger");
 const { safeValidationParam, valueTypeAtParam, validationDiagnostics } = require("./diagnostics");
 const { CHAT_REQUEST_FIELDS, CHAT_MESSAGE_FIELDS, normalizeChatDefaults } = require("./chat-contract");
 test("Chat recognition covers the audited field set without claiming every feature is mapped", () => {
@@ -128,6 +128,78 @@ test("asynchronous file logging has bounded buffering and rotates only its isola
   assert.ok(archives.length >= 1, `expected dated archive, got ${(await fs.readdir(temp)).join(",")}`);
   assert.ok((await fs.readFile(path.join(temp, archives[0]), "utf8")).includes("request"));
   assert.equal(log("ignored", {}), false);
+});
+test("rotation preserves colliding archives across logger restarts", async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-log-restart-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const destination = path.join(temp, "bridge.log");
+  const clock = new Date(2026, 9, 21, 12);
+  const first = path.join(temp, "bridge-2026-10-21.1.log");
+  await fs.writeFile(first, "existing-archive\n");
+  for (let i = 0; i < 2; i++) {
+    await fs.writeFile(destination, `active-before-restart-${i}\n`);
+    await fs.utimes(destination, clock, clock);
+    const log = createLogger({ logPath: destination, stdout: null, maxLogBytes: 110, now: () => clock });
+    log("request", { outcome: "force-size-rotation" }); await log.close();
+    assert.equal(log.stats().dropped, 0);
+    if (process.platform !== "win32") assert.equal((await fs.stat(destination)).mode & 0o777, 0o600);
+  }
+  assert.equal(await fs.readFile(first, "utf8"), "existing-archive\n");
+  assert.equal(await fs.readFile(path.join(temp, "bridge-2026-10-21.2.log"), "utf8"), "active-before-restart-0\n");
+  assert.equal(await fs.readFile(path.join(temp, "bridge-2026-10-21.3.log"), "utf8"), "active-before-restart-1\n");
+});
+test("the first post-restart write archives a previous-day active log without clobbering", async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-log-prior-day-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const destination = path.join(temp, "bridge.log");
+  const prior = new Date(2026, 9, 20, 23, 59);
+  await fs.writeFile(destination, "prior-day-active\n"); await fs.utimes(destination, prior, prior);
+  await fs.writeFile(path.join(temp, "bridge-2026-10-20.log"), "prior-day-archive\n");
+  const log = createLogger({ logPath: destination, stdout: null, now: () => new Date(2026, 9, 21, 12) });
+  log("request", { outcome: "new-day" }); await log.close();
+  assert.equal(await fs.readFile(path.join(temp, "bridge-2026-10-20.log"), "utf8"), "prior-day-archive\n");
+  assert.equal(await fs.readFile(path.join(temp, "bridge-2026-10-20.1.log"), "utf8"), "prior-day-active\n");
+  assert.equal((await fs.readFile(destination, "utf8")).includes("prior-day"), false);
+});
+test("runtime log validation preserves bytes, creates private regular files and rejects directories", async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-log-validate-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const destination = path.join(temp, "fixture.log");
+  await validateLogPath(undefined);
+  await validateLogPath(destination); assert.equal((await fs.stat(destination)).isFile(), true);
+  if (process.platform !== "win32") assert.equal((await fs.stat(destination)).mode & 0o777, 0o600);
+  await fs.writeFile(destination, "preserve-me\n"); await validateLogPath(destination);
+  assert.equal(await fs.readFile(destination, "utf8"), "preserve-me\n");
+  await assert.rejects(validateLogPath(temp), { code: "INVALID_CONFIG", param: "logPath" });
+  await assert.rejects(validateLogPath(path.join(temp, "missing", "fixture.log")), { code: "INVALID_CONFIG", param: "logPath" });
+  if (process.platform !== "win32") {
+    await assert.rejects(validateLogPath("/dev/null"), { code: "INVALID_CONFIG", param: "logPath" });
+    const symbolic = path.join(temp, "symbolic.log"); await fs.symlink(destination, symbolic);
+    await assert.rejects(validateLogPath(symbolic), { code: "INVALID_CONFIG", param: "logPath" });
+  }
+});
+test("log validation rejects a missing parent without creating a log or directory", async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-log-missing-parent-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const missing = path.join(temp, "PRIVATE_MISSING_PARENT");
+  await assert.rejects(validateLogPath(path.join(missing, "fixture.log")), error => {
+    assert.equal(error.code, "INVALID_CONFIG"); assert.equal(error.param, "logPath");
+    assert.equal(error.message.includes(missing), false); return true;
+  });
+  assert.deepEqual(await fs.readdir(temp), []);
+});
+test("Linux log validation rejects a read-only archive directory even with an appendable active log", {
+  skip: process.platform !== "linux" || process.getuid() === 0,
+}, async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-log-readonly-parent-"));
+  t.after(async () => { await fs.chmod(temp, 0o700); await fs.rm(temp, { recursive: true, force: true }); });
+  const destination = path.join(temp, "fixture.log");
+  await fs.writeFile(destination, "preserve-me\n", { mode: 0o600 });
+  await fs.chmod(temp, 0o500);
+  await fs.access(destination, require("node:fs").constants.W_OK);
+  await assert.rejects(validateLogPath(destination), { code: "INVALID_CONFIG", param: "logPath" });
+  assert.equal(await fs.readFile(destination, "utf8"), "preserve-me\n");
+  assert.deepEqual(await fs.readdir(temp), ["fixture.log"]);
 });
 test("logs roll to a dated archive when the local day changes", async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-log-daily-"));

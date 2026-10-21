@@ -4,7 +4,7 @@ This is a proposed acceptance procedure, **not evidence of Azure or WorkBuddy co
 
 ## Approval gate
 
-Before a person runs any real check, separately approve: the exact Azure resource origin, deployment/variant/version and deployment type; permitted sanitized prompts and tools; number of calls and maximum output tokens; a currency budget and stop condition; installed WorkBuddy version/build and Windows/Node version; log/evidence location and deletion policy. Do not put a key or local bearer token into a fixture, screenshot, commit, or report. No automated retry should be used for these POSTs. Never execute a generated call simply because its payload is present.
+Before a person runs any real check, separately approve: the exact Azure resource origin, deployment/variant/version and deployment type; permitted sanitized prompts and tools; number of calls and maximum output tokens; a currency budget and stop condition; installed WorkBuddy version/build and OS/Node version; listener IP/port, approved client network/firewall exposure and TLS trust; log/evidence location and deletion policy. Do not put a key or local bearer token into a fixture, screenshot, commit, or report. No automated retry should be used for these POSTs. Never execute a generated call simply because its payload is present.
 
 An approval should name which rows below are authorized. Running the offline suite does not approve these rows. This document contains no ready-to-run paid-call command.
 
@@ -12,7 +12,7 @@ An approval should name which rows below are authorized. Running the offline sui
 
 | Environment or behavior | Evidence status |
 |---|---|
-| Node 24.20.0 and 22.22.2 / Windows | Current isolated offline suites 131/131 each after the standards-first classification and WorkBuddy 5.8.3 metadata follow-up; syntax checks and launcher AST passed. This is not real acceptance; [validation record](<validation.md>) |
+| Node 24.20.0 and 22.22.2 / Windows | Historical main-branch isolated offline suites 131/131 each; syntax checks and launcher AST passed. These results do not validate the Linux/shared-core merge or real acceptance; subsequent checks are separate in the [validation record](<validation.md>) |
 | Other Node 22/24 releases / Windows and Linux | CI matrix configured; hosted CI, Linux and other runtime execution not claimed |
 | Installed WorkBuddy version and wire fixtures | Not captured or verified |
 | Azure resource, region, deployment type, effective variant/version | Not queried or verified |
@@ -36,7 +36,7 @@ Record each row as `not run`, `pass`, `fail`, or `inconclusive`, with the author
 | Cancellation | Stop in WorkBuddy during header wait, stream read and tool work | Upstream aborted, handlers/readers cleaned up, no later tool execution; distinguish user cancellation from gateway timeout |
 | Errors | Approved provider validation error and observed throttling, without deliberately flooding | Safe error `param`, retry advice and request IDs survive; no automatic retry after text/tool emission |
 | Limits | Representative large document/code under chosen request/line/event/body/total/concurrency bounds | Measure bytes and memory separately from tokens; reject over-limit work predictably; do not claim full 922k input on a small byte cap |
-| Operations | Foreground launcher, identity check, shutdown and explicitly installed scheduler recovery | Correct executable/config identity; same-port impostor not accepted; bounded shutdown; indefinite/restart/no-overlap settings confirmed |
+| Operations | Foreground direct Node (or Windows loopback-HTTP launcher), identity check, shutdown and separately authorized scheduler/systemd recovery | Correct executable/config identity; same-port impostor not accepted; bounded shutdown; indefinite/restart/no-overlap or systemd timeout/umask/log mode confirmed; LAN firewall/public-endpoint exposure and client TLS trust verified |
 
 ### Cache experiment (Standard deployments only)
 

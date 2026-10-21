@@ -11,12 +11,12 @@ function raw(overrides = {}) { return { azureBase: "https://example.invalid", ap
 function env(overrides = {}) { return { AZURE_OPENAI_BASE: "https://example.invalid", BRIDGE_APPROVED_ORIGINS: '["https://example.invalid"]',
   AZURE_OPENAI_API_KEY: "fixture-upstream", BRIDGE_PROXY_TOKEN: "fixture-local", BRIDGE_MODEL_ALIAS: "local",
   AZURE_OPENAI_MODEL: "opaque-deployment", AZURE_OPENAI_VARIANT: "gpt-6-luna", AZURE_OPENAI_VERSION: "fixture-version", ...overrides }; }
-test("startup requires explicit origins, deployment, variant/version, separate auth and loopback", () => {
+test("startup requires explicit origins, deployment, variant/version, separate auth and safe default binding", () => {
   const c = validateConfig(raw()); assert.equal(c.host, "127.0.0.1"); assert.equal(c.defaults.store, false);
   assert.equal(c.models.local.profile.images, false); assert.equal(c.models.local.profile.defaultEffort, undefined);
   for (const change of [{ approvedOrigins: [] }, { azureBase: "http://example.invalid" }, { azureBase: "https://example.invalid/openai" },
     { azureBase: "https://user:pass@example.invalid" }, { azureBase: "https://example.invalid/?q=1" }, { proxyToken: "fixture-upstream" },
-    { host: "0.0.0.0" }, { proxyToken: "fixture local" }, { proxyToken: " fixture-local " }, { proxyToken: "non-ascii-令牌" },
+    { host: "localhost" }, { proxyToken: "fixture local" }, { proxyToken: " fixture-local " }, { proxyToken: "non-ascii-令牌" },
     { models: { local: { deployment: "gpt-6-luna", variant: "gpt-5", version: "v" } } },
     { models: { local: { deployment: "some-gpt-6-name", variant: undefined, version: "v" } } },
     { models: { local: { deployment: "x", variant: "gpt-6-luna" } } }, { defaultModel: "unknown" }]) {
@@ -95,5 +95,36 @@ test("localhost HTTP requires an explicit isolated seam", () => {
   assert.throws(() => validateConfig(mock), /HTTPS/);
   assert.equal(validateConfig(mock, { allowHttpLocalhostForTests: true }).azureBase, "http://127.0.0.1:1234");
   assert.throws(() => validateConfig(raw({ azureBase: "http://localhost:1234", approvedOrigins: ["http://localhost:1234"] }), { allowHttpLocalhostForTests: true }), /HTTPS/);
+});
+test("Linux listener accepts explicit literal IPs, paired TLS paths and private listener identity", () => {
+  for (const host of ["127.0.0.1", "127.0.0.2", "192.168.1.10", "0.0.0.0", "::1", "::"]) {
+    assert.equal(validateConfig(raw({ host })).host, host);
+    assert.equal(loadConfig({ env: env({ BRIDGE_HOST: host }) }).host, host);
+  }
+  for (const host of ["", "localhost", "https://127.0.0.1", "127.0.0.1:8787", "[::1]", " 127.0.0.1 ", 123, "999.1.1.1"]) {
+    assert.throws(() => validateConfig(raw({ host })), { code: "INVALID_CONFIG", param: "host" });
+  }
+  for (const tls of [{ tlsCert: "cert.pem" }, { tlsKey: "key.pem" }, { tlsCert: "cert.pem", tlsKey: "" }]) {
+    assert.throws(() => validateConfig(raw(tls)), { code: "INVALID_CONFIG", param: "tls" });
+  }
+  const c = loadConfig({ env: env({ BRIDGE_TLS_CERT: "fixture cert.pem", BRIDGE_TLS_KEY: "fixture key.pem" }) });
+  assert.equal(c.tlsCert, path.resolve("fixture cert.pem"));
+  assert.equal(c.tlsKey, path.resolve("fixture key.pem"));
+  assert.equal(validateConfig(c).configId, c.configId, "factory revalidation remains stable");
+  assert.notEqual(validateConfig(raw()).configId, c.configId);
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ host: "127.0.0.2" })).configId);
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ port: 8788 })).configId);
+  assert.equal(c.configId, validateConfig({ ...c, tlsCert: "other cert.pem", tlsKey: "other key.pem" }).configId, "TLS paths/material never enter public identity; restart explicitly");
+});
+test("file and console log modes preserve legacy journald without rotating device files", () => {
+  assert.equal(validateConfig(raw()).logMode, "file");
+  for (const overrides of [{ BRIDGE_LOG_MODE: "console" }, { BRIDGE_LOG_PATH: "/dev/null" }]) {
+    const c = loadConfig({ env: env(overrides) });
+    assert.equal(c.logMode, "console"); assert.equal(c.logPath, undefined);
+    assert.equal(validateConfig(c).logMode, "console");
+  }
+  assert.equal(loadConfig({ env: env({ BRIDGE_LOG_MODE: "file", BRIDGE_LOG_PATH: "private.log" }) }).logPath, "private.log");
+  assert.throws(() => loadConfig({ env: env({ BRIDGE_LOG_MODE: "none" }) }), /logMode/);
+  assert.equal(validateConfig(raw()).configId, validateConfig(raw({ logMode: "console" })).configId);
 });
 module.exports = { raw, env };

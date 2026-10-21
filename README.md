@@ -1,8 +1,8 @@
 # Azure GPT-6 Responses Bridge
 
-A dependency-free, loopback-only Node.js adapter: **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
+A dependency-free Node.js adapter (loopback by default; opt-in LAN binding and native TLS): **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
 
-**Evidence boundary:** Windows offline suites passed **131/131** on Node **24.20.0** and **22.22.2**; syntax checks passed on both. See the [validation record](<docs/validation.md>) for commands and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>).
+**Evidence boundary:** The integrated Linux/shared-core offline suite passed **146 tests with 4 Linux-only skips (150 total)** on Windows with Node **24.20.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>).
 
 ## Requirements and migration
 
@@ -61,7 +61,11 @@ node .\bridge.js
 
 Or use the [Windows launcher](<start-bridge.ps1>): `./start-bridge.ps1 -NodePath "C:\Program Files\nodejs\node.exe"` (replace the executable path). The launcher accepts `-NodePath`/process `BRIDGE_NODE`, `-EnvFile`, `-NoEnvFile`, and `-CheckOnly`. Node discovery prefers the explicit override, then a valid PATH executable, then discovered WorkBuddy-managed versions; it does not install Node or pin an obsolete managed runtime. It validates configuration through `--check-config-json`, then checks matching service/protocol/build/config identity and `/readyz` before accepting an existing listener; it refuses to replace a different answering service. A new bridge runs in the foreground. Stop with `Ctrl+C`; shutdown has a bounded grace period for active requests. No desktop shortcut or scheduled task is created by this patch.
 
-Liveness, readiness and model listing are local checks and do not call Azure:
+Linux/Debian LXC uses the same shared core without a shell launcher; follow the [Linux deployment guide](<LINUX.md>) for private configuration, LAN/native TLS, firewall/client trust and direct-Node systemd setup.
+
+`BRIDGE_HOST` defaults to `127.0.0.1` and accepts only a literal IPv4/IPv6 address, not a hostname/URL or bracketed IPv6. Opt into a specific assigned LAN IP only when needed; `0.0.0.0`/`::` bind all interfaces and are not client destinations. `BRIDGE_TLS_CERT` and `BRIDGE_TLS_KEY` must either both be unset (HTTP) or both name readable files (native HTTPS). Relative TLS paths resolve from the Node process working directory, not the environment-file directory. Trust the certificate on clients and use the matching HTTPS URL; never disable TLS verification. Restrict LAN access with a firewall: binding an address does not implement access control, and the public GET endpoints below remain unauthenticated on every bound interface.
+
+Liveness, readiness and model listing do not call Azure. These examples use the default local HTTP listener; substitute the actual address/scheme for LAN/TLS (bracket IPv6 literals in URLs):
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8787/healthz
@@ -71,12 +75,12 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/models
 
 | Method | Path | Authentication / purpose |
 |---|---|---|
-| `GET` | `/healthz` | Public loopback liveness with service/build/protocol/configuration identity |
-| `GET` | `/readyz` | Public loopback readiness, distinct from liveness |
-| `GET` | `/v1/models` | Public loopback allowed alias list |
+| `GET` | `/healthz` | Public on the bound interface: liveness with service/build/protocol/configuration identity |
+| `GET` | `/readyz` | Public on the bound interface: readiness, distinct from liveness |
+| `GET` | `/v1/models` | Public on the bound interface: allowed alias list |
 | `POST` | `/v1/chat/completions` | `Authorization: Bearer <BRIDGE_PROXY_TOKEN>` |
 
-Configuration is validated before listening. `/healthz` reports liveness; `/readyz` reports local readiness, **not** that Azure credentials, quota, deployment availability, or WorkBuddy have been verified. Public config identity deliberately excludes credentials and credential fingerprints. After changing the Azure key or local token, explicitly stop/restart the running bridge; the launcher cannot detect a credential-only change from health identity. Port defaults to 8787; changing `BRIDGE_PORT` also requires updating the WorkBuddy URL.
+Configuration is validated before listening. `/healthz` reports liveness; `/readyz` reports local readiness, **not** that Azure credentials, quota, deployment availability, or WorkBuddy have been verified. Public config identity includes bind host/port and whether TLS is enabled, but deliberately excludes credentials, credential fingerprints and TLS key material. After changing credentials or TLS key/certificate files, explicitly stop/restart the running bridge; matching health identity does not prove credential/key equivalence. Port defaults to 8787; changing host, `BRIDGE_PORT` or TLS also requires updating the WorkBuddy URL. The Windows launcher is a local HTTP/loopback convenience and refuses LAN/TLS configuration; use direct Node for LAN/TLS.
 
 ## WorkBuddy: UI-first setup
 
@@ -131,13 +135,15 @@ Limits are positive configurable **bytes**, not model-token limits. Tune with wo
 
 `BRIDGE_TIMEOUTS` accepts positive milliseconds: `uploadMs=30000`, `upstreamIdleMs=300000`, `downstreamStallMs=30000`, `totalMs=1800000`, `shutdownMs=5000`. Upload, upstream idle, downstream stall and total lifetime are distinct; cancellation remains active while awaiting headers/reader/drain. `BRIDGE_MAX_OUTPUT_TOKENS` defaults to 128000 and bounds the forwarded output budget along with the profile cap. Reasoning and visible output share this cap; a low cap can be spent before an answer appears. The bridge does not tokenize/count full input locally.
 
-Operational logs use the Node process's local timezone with ISO timestamps and an explicit UTC offset (for example `2026-10-21T11:45:08.951+08:00`), and allowlisted fields only; they omit prompts, tool arguments, opaque reasoning and credentials. File writes are asynchronous with a bounded queue; saturation drops records rather than growing memory. Logs are not Azure billing or a full audit trail.
+Operational logs use the Node process's local timezone with ISO timestamps and an explicit UTC offset (for example `2026-10-21T11:45:08.951+08:00`), and allowlisted fields only; they omit prompts, tool arguments, opaque reasoning and credentials. Logs are not Azure billing or a full audit trail.
 
-`BRIDGE_LOG_PATH` selects the active file (default `bridge.log`). It rotates **daily** to a dated sibling such as `bridge-2026-10-21.log`, and mid-day when it would exceed `BRIDGE_MAX_LOG_BYTES` (default 10 MiB) to `bridge-2026-10-21.1.log`, `.2`, and so on. Archives older than `BRIDGE_LOG_RETENTION_DAYS` (default **7**) are deleted automatically, including a legacy `bridge.log.old`; retention checks run at most hourly and only touch files matching this log's own archive names.
+`BRIDGE_LOG_MODE` accepts `file` (default) or `console`. Console mode sends sanitized operational records to stdout without creating, rotating or pruning log files; it is recommended for systemd/journald. Legacy `BRIDGE_LOG_PATH=/dev/null` selects console mode only when `BRIDGE_LOG_MODE` is unset; migrate to explicit `BRIDGE_LOG_MODE=console`. Explicit file mode rejects the device path. File mode also mirrors sanitized records to stdout (and journald when captured by systemd). File writes are asynchronous with a bounded queue; saturation drops records rather than growing memory. Real startup requires a writable regular active file and creates a missing one with mode `0600`; it does not tighten permissions on an existing file. File mode requires a private owner-controlled writable archive directory with hardlink support and **one writer per log path** for rotation/retention; on Linux use `umask 077`, directory mode 700 and appropriate systemd write allowances. Startup checks active-file appendability, not all archive-directory operations; `--check-config-json` deliberately does not check log writability. Restrict journal access too. See the [Linux service guide](<LINUX.md#4-systemd-user-service-and-logging>).
+
+In file mode, `BRIDGE_LOG_PATH` selects the active file (default `bridge.log`). It rotates **daily** to a dated sibling such as `bridge-2026-10-21.log`, and mid-day when it would exceed `BRIDGE_MAX_LOG_BYTES` (default 10 MiB) to `bridge-2026-10-21.1.log`, `.2`, and so on. Archives older than `BRIDGE_LOG_RETENTION_DAYS` (default **7**) are deleted automatically, including a legacy `bridge.log.old`; retention checks run at most hourly and only touch files matching this log's own archive names.
 
 Use terminal outcome rather than HTTP 200 alone to judge a stream. First-token timing is the proxy's first text/refusal/summary or validated-tool emission; nonstream timing is completion time, not native Azure TTFT. Safe retry advice is forwarded, not automatically retried. Undeliverable terminal frames on a stalled/disconnected downstream cause closure rather than an unbounded drain wait.
 
-The metadata/local-time patch identifies itself as `adapter-v2.9`. It takes effect only in a newly started process: explicitly stop the old bridge before launching again. The launcher refuses to reuse an older build and never replaces it automatically. Existing log lines are not rewritten; earlier UTC (`Z`) records can coexist with new local-offset records.
+The merged Linux/shared-core build identifies itself as `adapter-v2.10-linux`. It takes effect only in a newly started process: explicitly stop the old bridge before launching again. The launcher refuses to reuse an older build and never replaces it automatically. Existing log lines are not rewritten; earlier UTC (`Z`) records can coexist with new local-offset records. TLS certificate/key path changes and renewals also require an explicit restart; paths and certificate/key material are excluded from public identity.
 
 ## Offline tests and CI
 
@@ -178,6 +184,6 @@ Save, run manually, inspect **Last Run Result**, service/config identity at `/he
 
 ## 中文简要说明
 
-这是仅监听本机 `127.0.0.1` 的 Chat Completions → Azure Responses 转换器；推理仍在 Azure 执行。必须显式配置客户端别名、Azure 部署名称、GPT-6 变体/版本以及可信 HTTPS origin。WorkBuddy 在「设置 → 模型」中填写完整本地 URL 和单独的本地令牌；Custom Protocol 开关只改变 URL 处理，不转换协议。图片能力保持关闭，直到实际客户端与部署获准联合验证。
+这是默认监听本机 `127.0.0.1` 的 Chat Completions → Azure Responses 转换器；推理仍在 Azure 执行。可通过 `BRIDGE_HOST` 显式选择 LAN IPv4/IPv6 字面地址，并成对配置 `BRIDGE_TLS_CERT`/`BRIDGE_TLS_KEY` 使用原生 HTTPS；相对证书路径以进程工作目录为基准。LAN 上的健康、就绪和模型列表仍无需认证，必须限制防火墙访问并建立客户端证书信任。Linux/systemd 推荐 `BRIDGE_LOG_MODE=console` 交给 journald；默认 `file` 模式需要私有可写目录。详见 [Linux 部署指南](<LINUX.md>)。必须显式配置客户端别名、Azure 部署名称、GPT-6 变体/版本以及可信 HTTPS origin。WorkBuddy 在「设置 → 模型」中填写完整本地 URL 和单独的本地令牌；Custom Protocol 开关只改变 URL 处理，不转换协议。图片能力保持关闭，直到实际客户端与部署获准联合验证。
 
 默认 `store:false`，不实现不透明推理状态连续性；它不关闭提示缓存，也不保证零数据保留或降低费用。GPT-6 使用 `prompt_cache_options`（`ttl:"30m"`），不用旧的 `24h` retention。PTU-M 不支持显式断点。测试只使用离线模拟；实际 WorkBuddy/Azure 验收及其预算须另行批准。Windows 持久任务应配置无限运行、失败重启且不允许实例重叠。完整行为以[兼容性说明](<docs/compatibility.md>)、[分阶段兼容计划](<docs/staged-compatibility.md>)、[审查处置](<docs/review-disposition.md>)和[验收计划](<docs/acceptance.md>)为准。

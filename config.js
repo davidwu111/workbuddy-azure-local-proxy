@@ -5,6 +5,7 @@ const { parseEnv } = require("node:util");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { isIP } = require("node:net");
 const { WORKBUDDY_MESSAGE_FIELDS, validateClientMetadataFieldName } = require("./chat-contract");
 const VARIANTS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
 const EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
@@ -69,9 +70,14 @@ function capabilityProfile(variant, overrides = {}, param = "profile") {
 }
 function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   object(raw, "config");
-  const config = { ...raw, host: "127.0.0.1" };
-  if (raw.host !== undefined && raw.host !== "127.0.0.1") fail("host", "loopback binding is mandatory");
+  const config = { ...raw, host: raw.host ?? "127.0.0.1" };
+  if (typeof config.host !== "string" || !isIP(config.host)) fail("host", "must be a literal IPv4 or IPv6 address");
   config.port = positive(raw.port ?? 8787, "port", 65535);
+  // File contents are read only at explicit listener/check startup, never on import.
+  const tlsPath = (value, param) => value === undefined || value === "" ? undefined : path.resolve(nonempty(value, param, 32768));
+  config.tlsCert = tlsPath(raw.tlsCert, "tlsCert");
+  config.tlsKey = tlsPath(raw.tlsKey, "tlsKey");
+  if (Boolean(config.tlsCert) !== Boolean(config.tlsKey)) fail("tls", "both certificate and key paths are required");
   config.azureBase = validateOrigin(raw.azureBase, "azureBase", allowHttpLocalhostForTests);
   if (!Array.isArray(raw.approvedOrigins) || !raw.approvedOrigins.length) fail("approvedOrigins", "an explicitly approved origin allowlist is required");
   config.approvedOrigins = raw.approvedOrigins.map((origin, i) => validateOrigin(origin, `approvedOrigins[${i}]`, allowHttpLocalhostForTests));
@@ -137,11 +143,13 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   config.timeouts = { ...TIMEOUT_DEFAULTS, ...object(raw.timeouts ?? {}, "timeouts") };
   keys(config.timeouts, Object.keys(TIMEOUT_DEFAULTS), "timeouts");
   for (const [key, value] of Object.entries(config.timeouts)) positive(value, `timeouts.${key}`, 86400000);
-  config.logPath = raw.logPath === undefined ? path.join(__dirname, "bridge.log") : nonempty(raw.logPath, "logPath", 32768);
+  // Retain old systemd /dev/null configuration as console-only, never rotate devices.
+  config.logMode = enumValue(raw.logMode ?? (raw.logPath === "/dev/null" ? "console" : "file"), ["file", "console"], "logMode");
+  config.logPath = config.logMode === "console" ? undefined : raw.logPath === undefined ? path.join(__dirname, "bridge.log") : nonempty(raw.logPath, "logPath", 32768);
   config.maxLogBytes = positive(raw.maxLogBytes ?? 10 * 1024 ** 2, "maxLogBytes", 512 * 1024 ** 2);
   config.logRetentionDays = positive(raw.logRetentionDays ?? 7, "logRetentionDays", 3650);
   // Never hash credential material into publicly visible identity.
-  config.configId = crypto.createHash("sha256").update(JSON.stringify({ models: config.models, defaultModel: config.defaultModel,
+  config.configId = crypto.createHash("sha256").update(JSON.stringify({ host: config.host, port: config.port, tls: Boolean(config.tlsCert), models: config.models, defaultModel: config.defaultModel,
     azureBase: config.azureBase, maxOutputTokens: config.maxOutputTokens, instructionPolicy: config.instructionPolicy,
     samplingPolicy: config.samplingPolicy, allowStore: config.allowStore, defaults: config.defaults,
     clientMetadataFields: config.clientMetadataFields, clientMetadataMode: config.clientMetadataMode,
@@ -179,7 +187,8 @@ function loadConfig({ env = process.env, envFile, allowHttpLocalhostForTests = f
   for (const [key, name] of Object.entries({ reasoningEffort: "BRIDGE_REASONING_EFFORT", reasoningMode: "BRIDGE_REASONING_MODE",
     reasoningContext: "BRIDGE_REASONING_CONTEXT", cacheKey: "BRIDGE_PROMPT_CACHE_KEY" })) if (merged[name] !== undefined) defaults[key] = merged[name];
   if (merged.BRIDGE_PROMPT_CACHE_OPTIONS !== undefined) defaults.cacheOptions = jsonEnv(merged, "BRIDGE_PROMPT_CACHE_OPTIONS");
-  return validateConfig({ host: "127.0.0.1", port: integerEnv(merged, "BRIDGE_PORT", 8787),
+  return validateConfig({ host: merged.BRIDGE_HOST ?? "127.0.0.1", port: integerEnv(merged, "BRIDGE_PORT", 8787),
+    tlsCert: merged.BRIDGE_TLS_CERT, tlsKey: merged.BRIDGE_TLS_KEY, logMode: merged.BRIDGE_LOG_MODE,
     azureBase: merged.AZURE_OPENAI_BASE, approvedOrigins: jsonEnv(merged, "BRIDGE_APPROVED_ORIGINS", []),
     azureApiKey: merged.AZURE_OPENAI_API_KEY, proxyToken: merged.BRIDGE_PROXY_TOKEN, models, defaultModel,
     maxOutputTokens: integerEnv(merged, "BRIDGE_MAX_OUTPUT_TOKENS", 128000),

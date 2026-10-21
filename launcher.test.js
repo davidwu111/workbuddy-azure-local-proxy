@@ -8,6 +8,7 @@ const http = require("node:http");
 const fsSync = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { loadConfig } = require("./config");
+const { BUILD } = require("./server");
 const windows = process.platform === "win32";
 // PowerShell startup plus two loopback probes is normally ~2 s; the margin covers
 // cold CI images. A hung child is reported with its captured output, not silently.
@@ -54,7 +55,7 @@ async function fixture(t, port = 8787) {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge launcher fixture "));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const file = path.join(temp, "isolated config.env");
-  await fs.writeFile(file, `AZURE_OPENAI_BASE=https://example.invalid\nBRIDGE_APPROVED_ORIGINS='["https://example.invalid"]'\nAZURE_OPENAI_API_KEY=fixture-upstream\nBRIDGE_PROXY_TOKEN=fixture-local\nAZURE_OPENAI_MODEL=deployment\nAZURE_OPENAI_VARIANT=gpt-6-luna\nAZURE_OPENAI_VERSION=fixture\nBRIDGE_MODEL_ALIAS=local\nexport BRIDGE_PORT=" ${port} "\n`);
+  await fs.writeFile(file, `AZURE_OPENAI_BASE=https://example.invalid\nBRIDGE_APPROVED_ORIGINS='["https://example.invalid"]'\nAZURE_OPENAI_API_KEY=fixture-upstream\nBRIDGE_PROXY_TOKEN=fixture-local\nAZURE_OPENAI_MODEL=deployment\nAZURE_OPENAI_VARIANT=gpt-6-luna\nAZURE_OPENAI_VERSION=fixture\nBRIDGE_MODEL_ALIAS=local\nBRIDGE_LOG_MODE=console\nBRIDGE_LOG_PATH='${path.join(temp, "fixture.log")}'\nexport BRIDGE_PORT=" ${port} "\n`);
   return file;
 }
 async function probe(t, responder) {
@@ -92,7 +93,7 @@ test("Windows launcher rejects same-port impostors and older builds instead of s
 });
 test("Windows launcher resolves relative executable and env paths before its cwd shift", { skip: !windows, timeout: 120000 }, async t => {
   const port = await probe(t, (_req, res) => { res.statusCode = 404; res.end(); });
-  const summary = JSON.stringify({ service: "azure-responses-bridge", protocol: "chat-to-responses-v1", build: "adapter-v2.9", configId: "fixture", host: "127.0.0.1", port });
+  const summary = JSON.stringify({ service: "azure-responses-bridge", protocol: "chat-to-responses-v1", build: BUILD, configId: "fixture", host: "127.0.0.1", port });
   const psQuote = value => value.replace(/'/g, "''");
   for (const lowercaseDrive of [false, true]) {
     const fixtureFile = await fixture(t, port);
@@ -113,13 +114,20 @@ test("Windows launcher resolves relative executable and env paths before its cwd
     assert.equal(await fs.realpath(resolvedEnvFile), await fs.realpath(file));
   }
 });
+test("Windows launcher validates TLS in check-only mode but refuses plaintext probes for HTTPS", { skip: !windows, timeout: 120000 }, async t => {
+  const file = await fixture(t);
+  const tlsDir = path.join(__dirname, "test-fixtures", "tls");
+  await fs.appendFile(file, `\nBRIDGE_TLS_CERT='${path.join(tlsDir, "localhost-cert.pem")}'\nBRIDGE_TLS_KEY='${path.join(tlsDir, "localhost-key.pem")}'\n`);
+  assert.equal(await runLauncher(file, true), 0);
+  assert.notEqual(await runLauncher(file, false), 0);
+});
 test("Windows launcher recognizes matching identity and checks readiness without restarting", { skip: !windows, timeout: 120000 }, async t => {
   const paths = []; let summary;
   const port = await probe(t, (req, res) => { paths.push(req.url); res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ ...summary, status: req.url === "/readyz" ? "ready" : "ok" })); });
   const file = await fixture(t, port);
   const config = loadConfig({ env: {}, envFile: file });
-  summary = { service: "azure-responses-bridge", protocol: "chat-to-responses-v1", build: "adapter-v2.9", configId: config.configId };
+  summary = { service: "azure-responses-bridge", protocol: "chat-to-responses-v1", build: BUILD, configId: config.configId };
   assert.equal(await runLauncher(file, false), 0);
   assert.deepEqual(paths, ["/healthz", "/readyz"]);
 });

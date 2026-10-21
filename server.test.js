@@ -40,7 +40,7 @@ function parsedFrames(text) { return frames(text).filter(value => value !== "[DO
 function toolFrames(text) { return parsedFrames(text).flatMap(value => value.choices?.flatMap(choice => choice.delta?.tool_calls || []) || []); }
 
 // Every upstream is injected; network use is owned ephemeral loopback only.
-test("factory is explicit, loopback-only, health/readiness identify build, and aliases never expose deployment", { timeout: 5000 }, async t => {
+test("factory is explicit, defaults to loopback, health/readiness identify build, and aliases never expose deployment", { timeout: 5000 }, async t => {
   let calls = 0; const f = await fixture(t, () => { calls++; return json(completed()); });
   const health = await (await fetch(f.base + "/healthz")).json(); const ready = await (await fetch(f.base + "/readyz")).json();
   assert.deepEqual([health.service, health.protocol, health.build], [SERVICE, PROTOCOL, BUILD]); assert.equal(ready.status, "ready"); assert.equal(health.configId, ready.configId);
