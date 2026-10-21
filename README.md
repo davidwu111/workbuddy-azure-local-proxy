@@ -1,258 +1,189 @@
-# Azure OpenAI Responses Bridge
+# Azure GPT-6 Responses Bridge
 
-For a Debian/Linux LAN deployment, see **[LINUX.md](LINUX.md)**. This page
-covers the original Windows-local setup; Linux users should set their own LAN
-IP instead of copying an address from another installation.
+A dependency-free Node.js adapter (loopback by default; opt-in LAN binding and native TLS): **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
 
-A small Windows-local proxy that accepts OpenAI Chat Completions requests from WorkBuddy, converts them to Azure OpenAI Responses API requests, and converts responses back to Chat Completions format. It uses Node.js built-ins only and listens on `127.0.0.1`.
+**Evidence boundary:** The integrated Linux/shared-core offline suite passed **146 tests with 4 Linux-only skips (150 total)** on Windows with Node **24.20.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>).
 
-## Requirements
+## Requirements and migration
 
-- Node.js 22 or newer
-- An Azure OpenAI resource with the Responses API enabled
-- A deployment name and Azure API key
+- Node.js 22 or newer; supported CI targets are Node 22 and 24.
+- An independently authorized Azure resource with GPT-6 Responses support and an API key. No SDK/npm installation or Azure CLI is required by this bridge.
+- A separate local bearer token, a trusted HTTPS Azure origin, and an explicit deployment/variant/version mapping.
 
-No npm install or package manifest is required.
+Older configuration that only supplies a deployment name is no longer sufficient. Arbitrary request `model` values no longer select any deployment accessible with the Azure key. Implementation work and offline checks do not read or modify production secrets; normal startup loads the private environment file you select.
 
-## Configure
+## Configure without sharing credentials
 
-Edit the workspace `.env` file:
+Use the placeholder-only [environment template](<.env.example>). Create a private `.env` beside the [entrypoint](<bridge.js>) **only if it does not already exist**; otherwise edit your existing configuration privately. Never overwrite a production environment file with the template. The file is plaintext and should be readable only by its owner. Process environment values take precedence over dotenv values; the launcher and entrypoint use the same Node dotenv parser.
+
+Minimal single route:
 
 ```dotenv
 AZURE_OPENAI_BASE=https://your-resource.openai.azure.com
-AZURE_OPENAI_API_KEY=your-azure-api-key
-BRIDGE_PROXY_TOKEN=your-separate-local-proxy-token
-AZURE_OPENAI_MODEL=your-deployment-name
-# BRIDGE_PORT=8787
+BRIDGE_APPROVED_ORIGINS='["https://your-resource.openai.azure.com"]'
+AZURE_OPENAI_API_KEY=replace-with-your-azure-resource-key
+BRIDGE_PROXY_TOKEN=replace-with-a-different-local-bearer-token
+AZURE_OPENAI_MODEL=your-gpt6-deployment
+AZURE_OPENAI_VARIANT=gpt-6-luna
+AZURE_OPENAI_VERSION=2026-09-22
+BRIDGE_MODEL_ALIAS=gpt-6-local
 ```
 
-`AZURE_OPENAI_BASE` is the Azure resource base URL. Do not append `/openai/v1/responses`; the bridge adds that path. `AZURE_OPENAI_MODEL` is the deployment name sent to Azure when a request does not provide a model.
+`AZURE_OPENAI_BASE` must be an HTTPS **origin**, without credentials, path, query, or fragment. Do not append `/openai/v1/responses`. `BRIDGE_APPROVED_ORIGINS` must explicitly include that exact trusted origin; this supports explicitly approved sovereign/private/custom origins without guessing a domain suffix. Requests use `redirect: "error"`; HTTP upstreams are limited to an explicit injected loopback test seam, not a production environment switch.
 
-Use a local proxy token that is different from the Azure key. To generate one with Node.js, run:
+`AZURE_OPENAI_MODEL` is the **Azure deployment name**. `AZURE_OPENAI_VARIANT` identifies the underlying model; `AZURE_OPENAI_VERSION` records the operator-declared deployment version. `BRIDGE_MODEL_ALIAS` is what WorkBuddy sends and sees. The bridge does not query Azure to discover or verify that declaration.
+
+For multiple routes, `BRIDGE_MODELS` is a JSON object whose entries have `deployment`, `variant`, `version`, and optional `profile`. This replaces the single-route identity settings; `BRIDGE_MODEL_ALIAS` must identify the default entry:
+
+```dotenv
+BRIDGE_MODEL_ALIAS=gpt-6-local
+BRIDGE_MODELS='{"gpt-6-local":{"deployment":"your-luna-deployment","variant":"gpt-6-luna","version":"2026-09-22"},"gpt-6-sol-local":{"deployment":"your-sol-deployment","variant":"gpt-6.1-sol","version":"2026-09-29"}}'
+```
+
+Allowed variants are `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, and `gpt-6.1-sol`. Omitting the request model selects the default alias; unknown aliases are rejected before upstream forwarding. Profiles are conservative capability gates, not proof of provider support. Images and `pro` mode are off by default. See [profile overrides and disputed combinations](<docs/compatibility.md#profiles-and-official-evidence>) before changing them.
+
+Generate a separate local token if needed:
 
 ```powershell
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-The bridge loads `.env` at startup. Values already present in the process environment take precedence. `.env` and generated log files are listed in `.gitignore`, but `.env` is plaintext and is not encrypted. Keep the workspace accessible only to your Windows account, and never commit or share the file.
+Put this token only in your private environment and WorkBuddy. It must be **visible ASCII with no whitespace** and match byte-for-byte; leading/trailing spaces, embedded whitespace and non-ASCII are rejected rather than trimmed into a different credential. Do not put the Azure key in WorkBuddy.
 
-## Run
+## Run and check locally
 
-From PowerShell in the workspace folder, run the managed Node 22 installation used by this machine:
+From PowerShell in the workspace:
 
 ```powershell
-$node = "$env:USERPROFILE\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
-& $node .\bridge.js
+node .\bridge.js --check-config-json
+node .\bridge.js
 ```
 
-Or run `node .\bridge.js` if Node 22 is on `PATH`. Stop the foreground process with `Ctrl+C`.
+Or use the [Windows launcher](<start-bridge.ps1>): `./start-bridge.ps1 -NodePath "C:\Program Files\nodejs\node.exe"` (replace the executable path). The launcher accepts `-NodePath`/process `BRIDGE_NODE`, `-EnvFile`, `-NoEnvFile`, and `-CheckOnly`. Node discovery prefers the explicit override, then a valid PATH executable, then discovered WorkBuddy-managed versions; it does not install Node or pin an obsolete managed runtime. It validates configuration through `--check-config-json`, then checks matching service/protocol/build/config identity and `/readyz` before accepting an existing listener; it refuses to replace a different answering service. A new bridge runs in the foreground. Stop with `Ctrl+C`; shutdown has a bounded grace period for active requests. No desktop shortcut or scheduled task is created by this patch.
 
-From the workspace folder, run `.\start-bridge.ps1`. The launcher selects the managed Node 22 installation above (or Node 22+ on `PATH`), checks whether the bridge is already healthy, and keeps the process in the current window. A desktop shortcut named **Azure OpenAI Responses Bridge** is also available for this Windows profile; double-click it to start the bridge. Press `Ctrl+C` in its window to stop a newly launched process.
+Linux/Debian LXC uses the same shared core without a shell launcher; follow the [Linux deployment guide](<LINUX.md>) for private configuration, LAN/native TLS, firewall/client trust and direct-Node systemd setup.
 
-The bridge writes operational events to the console and `bridge.log`; when the log reaches 10 MiB, it rotates to `bridge.log.old`. It does not intentionally log request bodies, tool arguments, or credentials.
+`BRIDGE_HOST` defaults to `127.0.0.1` and accepts only a literal IPv4/IPv6 address, not a hostname/URL or bracketed IPv6. Opt into a specific assigned LAN IP only when needed; `0.0.0.0`/`::` bind all interfaces and are not client destinations. `BRIDGE_TLS_CERT` and `BRIDGE_TLS_KEY` must either both be unset (HTTP) or both name readable files (native HTTPS). Relative TLS paths resolve from the Node process working directory, not the environment-file directory. Trust the certificate on clients and use the matching HTTPS URL; never disable TLS verification. Restrict LAN access with a firewall: binding an address does not implement access control, and the public GET endpoints below remain unauthenticated on every bound interface.
 
-## Check It
-
-In another PowerShell window:
+Liveness, readiness and model listing do not call Azure. These examples use the default local HTTP listener; substitute the actual address/scheme for LAN/TLS (bracket IPv6 literals in URLs):
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8787/healthz
+Invoke-RestMethod http://127.0.0.1:8787/readyz
 Invoke-RestMethod http://127.0.0.1:8787/v1/models
 ```
 
-The main endpoint is `POST http://127.0.0.1:8787/v1/chat/completions`. It requires `Authorization: Bearer <BRIDGE_PROXY_TOKEN>`.
+| Method | Path | Authentication / purpose |
+|---|---|---|
+| `GET` | `/healthz` | Public on the bound interface: liveness with service/build/protocol/configuration identity |
+| `GET` | `/readyz` | Public on the bound interface: readiness, distinct from liveness |
+| `GET` | `/v1/models` | Public on the bound interface: allowed alias list |
+| `POST` | `/v1/chat/completions` | `Authorization: Bearer <BRIDGE_PROXY_TOKEN>` |
 
-Run the local regression tests with:
+Configuration is validated before listening. `/healthz` reports liveness; `/readyz` reports local readiness, **not** that Azure credentials, quota, deployment availability, or WorkBuddy have been verified. Public config identity includes bind host/port and whether TLS is enabled, but deliberately excludes credentials, credential fingerprints and TLS key material. After changing credentials or TLS key/certificate files, explicitly stop/restart the running bridge; matching health identity does not prove credential/key equivalence. Port defaults to 8787; changing host, `BRIDGE_PORT` or TLS also requires updating the WorkBuddy URL. The Windows launcher is a local HTTP/loopback convenience and refuses LAN/TLS configuration; use direct Node for LAN/TLS.
+
+## WorkBuddy: UI-first setup
+
+In **Settings → Model**, add a **Custom** model:
+
+1. URL: `http://127.0.0.1:8787/v1/chat/completions` (full local path).
+2. API key: the local `BRIDGE_PROXY_TOKEN`, never the Azure key.
+3. Model name: the configured alias, for example `gpt-6-local`, not necessarily the Azure deployment or model ID.
+4. Enable the **Custom Protocol** advanced switch. Official WorkBuddy documentation says this only bypasses URL path validation/auto-completion and sends to the entered URL; it **does not** convert Chat requests into Responses. This adapter performs conversion.
+5. Function-tool calling can be configured for the supported subset. Keep **`supportsImages: false`** until the installed-client/adapter/deployment path has been separately verified. Reasoning display is provider-generated summary text, not raw hidden reasoning or persisted state.
+
+The public client docs do not establish a full wire contract for `reasoning_content`, extension-field round-tripping, usage chunks, session IDs, cancellation, or sampling defaults. Capture sanitized fixtures and record the exact installed WorkBuddy build before claiming compatibility. Do not edit a guessed internal configuration file when the UI suffices. [Official WorkBuddy model configuration](https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Model).
+
+## Request and privacy policy
+
+The [compatibility contract](<docs/compatibility.md>) enumerates supported, rejected, and ignored fields. The [staged compatibility plan](<docs/staged-compatibility.md>) explains the four-way classification and the WorkBuddy 5.8.3 field policy. Important policies:
+
+- Standard Chat Completions fields are **recognised**, then classified as mapped, deliberately normalized, standard-but-unsupported (`unsupported_parameter`), or unknown (`unknown_parameter`). A field is never accepted and then silently dropped.
+- Exact disabled/unset defaults are normalized (nullable options, zero penalties, empty bias/stop, text-only modalities, disabled logprobs). Enabled semantic controls the bridge cannot honour are rejected rather than clamped or replaced.
+- Explicit supported effort is preserved, including `none` for Sol/Luna; Astra/6.1 Sol reject `none`. A profile-rejected effort is `unsupported_parameter`, never substituted.
+- Sampling combinations are gated by effective effort/profile. Default policy rejects incompatible values. `BRIDGE_SAMPLING_POLICY=drop-defaults` only removes incompatible `temperature` or `top_p` exactly equal to `1`, and reports field names; it never silently replaces effort.
+- `BRIDGE_INSTRUCTION_POLICY=reject-mixed` rejects mixing system and developer roles; other explicit policies preserve or normalize roles in chronological order, with block boundaries intact.
+- WorkBuddy's message-level `startsNewUserRequest` (boolean), `agent` and `conversationRequestId` (bounded opaque JSON) are validated and ignored by the stateless adapter. None is forwarded to Azure, used as provider metadata, or used to infer session/branch identity. `BRIDGE_CLIENT_METADATA_FIELDS` extends the named list; `BRIDGE_CLIENT_METADATA_MODE=auto` (default) also absorbs any other non-standard message key after bounded validation, recording only its name. Standard/reserved message fields and unknown top-level fields are still rejected in both modes.
+- Function tools default omitted or `null` `strict` to explicit `false`; explicit strictness and supported structured-output formats are preserved. Streaming tool-call fields are buffered until the terminal response validates complete calls; text/refusal/summary can still stream incrementally. This intentional tool latency prevents partial-call execution, but still requires actual WorkBuddy verification.
+- `store:false` is sent by default; `store:null` resolves to that declared policy. Enabling provider storage requires explicit `BRIDGE_ALLOW_STORE=true` and a request/default storage opt-in. **Stored chaining is still not implemented.** Provider storage and prompt caching are separate controls: `store:false` does not disable prompt caching, keep inference local, or guarantee Zero Data Retention.
+- Chat history does not preserve opaque reasoning, phases/compaction state automatically. There is no global previous-response ID or guessed session sidecar. Async tools, WebSockets/steering, cloud built-in tools, and `configuration_update` are deferred.
+- Local validation failures log a bounded stage, code, sanitised parameter path and JSON type — never the request body, message text, tool arguments, opaque metadata or upstream error text. Use those fields to diagnose a client mismatch.
+
+## GPT-6 cache controls and cost
+
+The bridge validates `prompt_cache_key`, `prompt_cache_options: {mode: "implicit"|"explicit", ttl: "30m"}`, and supported content-block `prompt_cache_breakpoint: {mode: "explicit"}`. The bridge does not insert automatic explicit breakpoints. Optional environment defaults are `BRIDGE_PROMPT_CACHE_KEY` and JSON `BRIDGE_PROMPT_CACHE_OPTIONS`. Legacy `prompt_cache_retention` is rejected; `24h` is not the GPT-6 fix.
+
+For Standard pay-as-you-go, explicit mode **without breakpoints** disables caching and cache-write charges. Implicit mode uses Azure's default policy plus supplied breakpoints. PTU-M supports automatic caching, but not explicit breakpoints, explicit no-cache policy, or cache-write counters; declare `profile.deploymentType: "ptu-m"` to enforce this locally.
+
+Stable rendered prefixes must match and contain at least 1,024 tokens to be cacheable. Use a stable non-secret prefix-family key; do not generate a random key per request, hash changing history, or reorder tools for speculative hits. A key never guarantees a hit. GPT-6 cache writes can be charged; mapped and raw read/write/reasoning counters must be reconciled with actual Azure deployment pricing and billing. Continuity and caching provide **no guaranteed cost reduction**. [Azure prompt caching](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/prompt-caching).
+
+## Resource bounds and diagnostics
+
+Limits are positive configurable **bytes**, not model-token limits. Tune with workload/concurrency memory measurements; defaults are operational choices and do not claim support for the entire model input window.
+
+| `BRIDGE_LIMITS` key | Default |
+|---|---:|
+| `requestBytes` | 8 MiB |
+| `jsonBytes` | 32 MiB |
+| `errorBytes` | 64 KiB |
+| `sseLineBytes`, `sseEventBytes`, `sseBufferBytes` | 16 MiB each |
+| `responseBytes` | 64 MiB |
+| `maxConcurrent` | 16 |
+| `maxQueue` | 32 |
+
+`responseBytes` bounds upstream total and encoded downstream independently; `sseBufferBytes` constrains active event framing and retained output separately, not total process RSS. Requests above `maxConcurrent` wait for a slot, bounded by `maxQueue` and `timeouts.capacityWaitMs` (default 30 s); set `maxQueue: 0` for immediate 429. A capacity rejection is `rate_limit_error` with `Retry-After: 1`, and queue time is logged as `queuedFor`. Parallel agent workflows need a cap well above a single conversation's request count. Required MIME is JSON for uploads/nonstream upstream, SSE for streaming upstream.
+
+`BRIDGE_TIMEOUTS` accepts positive milliseconds: `uploadMs=30000`, `upstreamIdleMs=300000`, `downstreamStallMs=30000`, `totalMs=1800000`, `shutdownMs=5000`. Upload, upstream idle, downstream stall and total lifetime are distinct; cancellation remains active while awaiting headers/reader/drain. `BRIDGE_MAX_OUTPUT_TOKENS` defaults to 128000 and bounds the forwarded output budget along with the profile cap. Reasoning and visible output share this cap; a low cap can be spent before an answer appears. The bridge does not tokenize/count full input locally.
+
+Operational logs use the Node process's local timezone with ISO timestamps and an explicit UTC offset (for example `2026-10-21T11:45:08.951+08:00`), and allowlisted fields only; they omit prompts, tool arguments, opaque reasoning and credentials. Logs are not Azure billing or a full audit trail.
+
+`BRIDGE_LOG_MODE` accepts `file` (default) or `console`. Console mode sends sanitized operational records to stdout without creating, rotating or pruning log files; it is recommended for systemd/journald. Legacy `BRIDGE_LOG_PATH=/dev/null` selects console mode only when `BRIDGE_LOG_MODE` is unset; migrate to explicit `BRIDGE_LOG_MODE=console`. Explicit file mode rejects the device path. File mode also mirrors sanitized records to stdout (and journald when captured by systemd). File writes are asynchronous with a bounded queue; saturation drops records rather than growing memory. Real startup requires a writable regular active file and creates a missing one with mode `0600`; it does not tighten permissions on an existing file. File mode requires a private owner-controlled writable archive directory with hardlink support and **one writer per log path** for rotation/retention; on Linux use `umask 077`, directory mode 700 and appropriate systemd write allowances. Startup checks active-file appendability, not all archive-directory operations; `--check-config-json` deliberately does not check log writability. Restrict journal access too. See the [Linux service guide](<LINUX.md#4-systemd-user-service-and-logging>).
+
+In file mode, `BRIDGE_LOG_PATH` selects the active file (default `bridge.log`). It rotates **daily** to a dated sibling such as `bridge-2026-10-21.log`, and mid-day when it would exceed `BRIDGE_MAX_LOG_BYTES` (default 10 MiB) to `bridge-2026-10-21.1.log`, `.2`, and so on. Archives older than `BRIDGE_LOG_RETENTION_DAYS` (default **7**) are deleted automatically, including a legacy `bridge.log.old`; retention checks run at most hourly and only touch files matching this log's own archive names.
+
+Use terminal outcome rather than HTTP 200 alone to judge a stream. First-token timing is the proxy's first text/refusal/summary or validated-tool emission; nonstream timing is completion time, not native Azure TTFT. Safe retry advice is forwarded, not automatically retried. Undeliverable terminal frames on a stalled/disconnected downstream cause closure rather than an unbounded drain wait.
+
+The merged Linux/shared-core build identifies itself as `adapter-v2.10-linux`. It takes effect only in a newly started process: explicitly stop the old bridge before launching again. The launcher refuses to reuse an older build and never replaces it automatically. Existing log lines are not rewritten; earlier UTC (`Z`) records can coexist with new local-offset records. TLS certificate/key path changes and renewals also require an explicit restart; paths and certificate/key material are excluded from public identity.
+
+## Offline tests and CI
+
+Run all isolated tests and syntax checks without Azure or real credentials:
 
 ```powershell
-& $node --test .\bridge.test.js
+node --test *.test.js
+# In a confined environment without test-worker stdio pipes (Node 22/24):
+# node run-offline-tests.cjs
+# Node 24 also supports: node --test --test-isolation=none *.test.js
+Get-ChildItem -File -Path *.js,*.cjs | ForEach-Object { node --check $_.FullName; if ($LASTEXITCODE) { throw "Syntax check failed" } }
 ```
 
-The tests use a local mock upstream and do not call Azure or require real credentials. They cover authentication, non-streaming responses, tool calls, upstream errors, and streaming size limits. An Azure/WorkBuddy end-to-end check is still recommended before deployment. Upstream SSE events over 1 MiB are rejected with an error frame so a malformed stream cannot grow memory without bound.
+The [CI workflow](<.github/workflows/test.yml>) runs Node 22/24 on Windows/Linux and parses the [launcher](<start-bridge.ps1>) AST on Windows without executing it. Tests use explicit injected configuration and ephemeral loopback fixtures, not production secrets/logs. See [review disposition](<docs/review-disposition.md>) for coverage and residual limitations. Real WorkBuddy/Azure checks require separate approval of [the acceptance plan](<docs/acceptance.md>).
 
-## WorkBuddy Model Entry
+## Windows Task Scheduler (instructions only)
 
-Configure the custom model to use the local proxy. Keep its `apiKey` set to the local proxy token, not the Azure API key.
+For a persistent service, open **Task Scheduler → Create Task** under the account that owns the private environment and can write logs. Choose an **At log on** trigger and a suitable noninteractive account policy. No task is installed by this repository.
 
-```json
-{
-  "id": "gpt-6-luna",
-  "name": "gpt-6-luna",
-  "vendor": "Custom",
-  "url": "http://127.0.0.1:8787/v1/chat/completions",
-  "apiKey": "<same value as BRIDGE_PROXY_TOKEN>",
-  "supportsToolCall": true,
-  "supportsImages": false,
-  "supportsReasoning": true,
-  "reasoning": {
-    "defaultEffort": "low",
-    "supportedEfforts": ["low", "medium", "high"]
-  },
-  "useCustomProtocol": true
-}
-```
+For predictable recovery, point the action directly at an explicit maintained Node executable (rather than a health-check launcher that may exit after finding another instance):
 
-Restart WorkBuddy after changing its model configuration. The bridge maps tool calls and reasoning summaries when Azure returns them; it does not expose hidden reasoning. Image URL content is translated by the proxy, but WorkBuddy image support should only be enabled if the client and deployment have been verified together.
+- **Program/script:** the actual Node executable, e.g. `C:\Program Files\nodejs\node.exe` (use the path field/browser; do not include arguments here).
+- **Add arguments:** `"C:\Users\<your-user>\azure-bridge\bridge.js"` — quote the full script path, particularly if it contains spaces.
+- **Start in:** `C:\Users\<your-user>\azure-bridge` — directory only, no surrounding quotes in this field.
+- **Settings:** disable **Stop the task if it runs longer than** (XML `ExecutionTimeLimit=PT0S` for indefinite execution). The Microsoft default is 72 hours, not indefinite.
+- Enable **restart on failure**, e.g. every 1 minute with 3 attempts; tune recovery to your needs. Under **If the task is already running**, select **Do not start a new instance**. Review battery/idle conditions so they do not unexpectedly stop a persistent bridge.
 
-## Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/healthz` | Process health check |
-| `GET` | `/v1/models` | Configured model listing |
-| `POST` | `/v1/chat/completions` | Chat Completions to Responses API conversion |
-
-The listener is bound to loopback only. Health and model-list endpoints are unauthenticated; the chat endpoint requires the local bearer token.
+Save, run manually, inspect **Last Run Result**, service/config identity at `/healthz`, and sanitized logs. Task Scheduler force-ending a task may bypass graceful cleanup; prefer a normal foreground stop for shutdown checks. Use only actual quoted paths on your machine. [Microsoft execution-time limit](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit).
 
 ## Troubleshooting
 
-- **Connection refused:** Confirm the process is running and check whether another process is using the configured port. Set `BRIDGE_PORT` in `.env` to choose another port, then update the WorkBuddy URL.
-- **503 configuration error:** Check that `AZURE_OPENAI_BASE`, `AZURE_OPENAI_API_KEY`, and `BRIDGE_PROXY_TOKEN` are non-empty in `.env` or the process environment.
-- **401 authentication error:** The WorkBuddy `apiKey` must exactly match `BRIDGE_PROXY_TOKEN`.
-- **Azure 4xx/5xx response:** Verify the resource base URL, deployment name, API key, and Responses API availability. Azure error details are returned in an OpenAI-style error body.
-- **No reasoning summary appears:** The deployment must return a reasoning summary for the requested effort; the bridge does not synthesize one.
+- **Startup rejects configuration:** explicit trusted origin, distinct nonempty credentials, route/variant/version and profile/default compatibility are required; check locally before listening.
+- **401:** WorkBuddy must use the exact local bearer token.
+- **400:** a requested semantic field/value is unsupported or malformed; see error `param` and [the contract](<docs/compatibility.md>). Do not remove an explicit budget/effort/cache policy merely to suppress the error.
+- **429/503/504 or SSE error:** distinguish local concurrency/timeout, upstream HTTP failure and stream corruption; inspect safe retry advice and correlation IDs. Do not automatically replay emitted tool calls.
+- **No reasoning summary:** provider summaries are not guaranteed on every request; the bridge does not synthesize hidden reasoning.
+- **Cache miss:** verify a stable ≥1,024-token rendered prefix, unchanged tools/schema/detail and the deployment type. One miss is inconclusive; use separately approved measured experiments.
 
-## Windows Startup Task
+## 中文简要说明
 
-To start the bridge manually, open PowerShell in the workspace folder and run the command in [Run](#run). Keep that window open; press `Ctrl+C` to stop the bridge.
+这是默认监听本机 `127.0.0.1` 的 Chat Completions → Azure Responses 转换器；推理仍在 Azure 执行。可通过 `BRIDGE_HOST` 显式选择 LAN IPv4/IPv6 字面地址，并成对配置 `BRIDGE_TLS_CERT`/`BRIDGE_TLS_KEY` 使用原生 HTTPS；相对证书路径以进程工作目录为基准。LAN 上的健康、就绪和模型列表仍无需认证，必须限制防火墙访问并建立客户端证书信任。Linux/systemd 推荐 `BRIDGE_LOG_MODE=console` 交给 journald；默认 `file` 模式需要私有可写目录。详见 [Linux 部署指南](<LINUX.md>)。必须显式配置客户端别名、Azure 部署名称、GPT-6 变体/版本以及可信 HTTPS origin。WorkBuddy 在「设置 → 模型」中填写完整本地 URL 和单独的本地令牌；Custom Protocol 开关只改变 URL 处理，不转换协议。图片能力保持关闭，直到实际客户端与部署获准联合验证。
 
-To start it automatically when you sign in to Windows:
-
-1. Open **Task Scheduler** and choose **Create Task**.
-2. On **General**, name the task `Azure OpenAI Responses Bridge`. Select **Run whether user is logged on or not** and use the Windows account that owns the workspace. Windows may ask for that account's password when you save. This runs the task non-interactively, without opening a terminal window; that account must be able to read `.env` and write the log in the workspace.
-3. On **Triggers**, add **At log on** for your Windows account.
-4. On **Actions**, add **Start a program**. Set **Program/script** to the full path of your Node 22 executable (for the managed installation shown above, resolve `%USERPROFILE%` to your actual user folder, for example `C:\Users\<your-user>\.workbuddy\binaries\node\versions\22.22.2-3\node.exe`). Set **Add arguments** to the full path of `bridge.js`, and **Start in** to the workspace folder, for example `C:\Users\<your-user>\azure-bridge`.
-5. Save the task. Use **Run** in Task Scheduler to test it, then check `http://127.0.0.1:8787/healthz` and the task's **Last Run Result**. The task has not been created by this project setup. End it from Task Scheduler when needed; the bridge writes operational logs to `bridge.log` in the workspace.
-
-Use the actual paths on your machine. The bridge reads `.env` from its own folder, writes logs there, and listens only on `127.0.0.1`.
-
----
-
-# 中文说明
-
-Linux/Debian 局域网部署请参阅 **[LINUX.md](LINUX.md)**（英文）。本页主要说明原有的
-Windows 本机用法；Linux 用户需填写自己主机的局域网 IP。
-
-## 项目简介
-
-一个仅在本机 Windows 运行的小型代理：接收 WorkBuddy 发来的 OpenAI Chat Completions 请求，转换为 Azure OpenAI Responses API 请求，再把响应转换回 Chat Completions 格式。只使用 Node.js 内置模块，仅监听 `127.0.0.1`，不暴露局域网。
-
-## 环境要求
-
-- Node.js 22 或更新版本
-- 已启用 Responses API 的 Azure OpenAI 资源
-- 部署名称和 Azure API 密钥
-
-无需 npm install，也不需要 package.json。
-
-## 配置
-
-编辑工作区下的 `.env` 文件：
-
-```dotenv
-AZURE_OPENAI_BASE=https://your-resource.openai.azure.com
-AZURE_OPENAI_API_KEY=your-azure-api-key
-BRIDGE_PROXY_TOKEN=your-separate-local-proxy-token
-AZURE_OPENAI_MODEL=your-deployment-name
-# BRIDGE_PORT=8787
-```
-
-`AZURE_OPENAI_BASE` 是 Azure 资源的基础 URL，不要在末尾追加 `/openai/v1/responses`，代理会自动拼接该路径。`AZURE_OPENAI_MODEL` 是请求未指定模型时发给 Azure 的部署名称。
-
-本地代理令牌必须与 Azure 密钥不同。可用 Node.js 生成一个：
-
-```powershell
-node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
-```
-
-代理启动时加载 `.env`；进程环境变量中已有的同名值优先。`.env` 和生成的日志文件已加入 `.gitignore`，但 `.env` 是明文存储、未加密。请确保工作区只有你的 Windows 账户可以访问，切勿提交或分享该文件。
-
-## 启动
-
-在工作区目录下的 PowerShell 中，使用本机的托管版 Node 22 运行：
-
-```powershell
-$node = "$env:USERPROFILE\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
-& $node .\bridge.js
-```
-
-如果 Node 22 已在 `PATH` 中，也可以直接运行 `node .\bridge.js`。用 `Ctrl+C` 停止前台进程。
-
-也可以在工作区目录下运行 `.\start-bridge.ps1` 启动。启动脚本会优先使用上文所述的托管版 Node 22（或 `PATH` 中的 Node 22 及更新版本），并检查代理是否已经正常运行，避免重复启动。当前 Windows 用户的桌面上也有名为 **Azure OpenAI Responses Bridge** 的快捷方式；双击即可启动代理。在快捷方式打开的窗口中按 `Ctrl+C`，可停止由该窗口新启动的代理进程。
-
-代理会把运行事件写入控制台和 `bridge.log`；日志达到 10 MiB 时轮转为 `bridge.log.old`。代理不会主动记录请求体、工具参数或凭据。
-
-## 验证
-
-在另一个 PowerShell 窗口中：
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8787/healthz
-Invoke-RestMethod http://127.0.0.1:8787/v1/models
-```
-
-核心端点是 `POST http://127.0.0.1:8787/v1/chat/completions`，需要请求头 `Authorization: Bearer <BRIDGE_PROXY_TOKEN>`。
-
-运行本地回归测试：
-
-```powershell
-& $node --test .\bridge.test.js
-```
-
-测试使用本地模拟上游，不会调用 Azure，也不需要真实凭据。测试覆盖鉴权、非流式响应、工具调用、上游错误和流式大小限制；部署前仍建议与 Azure 和 WorkBuddy 做端到端验证。超过 1 MiB 的上游 SSE 事件会以错误帧拒绝，避免异常流无限占用内存。
-
-## WorkBuddy 模型配置
-
-把自定义模型指向本地代理。`apiKey` 填本地代理令牌，而不是 Azure API 密钥：
-
-```json
-{
-  "id": "gpt-6-luna",
-  "name": "gpt-6-luna",
-  "vendor": "Custom",
-  "url": "http://127.0.0.1:8787/v1/chat/completions",
-  "apiKey": "<与 BRIDGE_PROXY_TOKEN 相同的值>",
-  "supportsToolCall": true,
-  "supportsImages": false,
-  "supportsReasoning": true,
-  "reasoning": {
-    "defaultEffort": "low",
-    "supportedEfforts": ["low", "medium", "high"]
-  },
-  "useCustomProtocol": true
-}
-```
-
-修改 WorkBuddy 模型配置后需要重启 WorkBuddy。Azure 返回工具调用和 reasoning summary 时代理会做映射；代理不会暴露隐藏的推理内容。图片 URL 内容虽会被代理转换，但只有在客户端和部署联合验证过后，才应在 WorkBuddy 中开启图片支持。
-
-## 端点一览
-
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| `GET` | `/healthz` | 进程存活检查 |
-| `GET` | `/v1/models` | 已配置模型列表 |
-| `POST` | `/v1/chat/completions` | Chat Completions 到 Responses API 的转换 |
-
-监听仅绑定回环地址。健康检查和模型列表端点无需鉴权；聊天端点需要本地 Bearer 令牌。
-
-## 故障排查
-
-- **连接被拒绝：** 确认进程正在运行，并检查端口是否被其他进程占用。可在 `.env` 中设置 `BRIDGE_PORT` 更换端口，并同步更新 WorkBuddy 的 URL。
-- **503 配置错误：** 检查 `.env` 或进程环境中 `AZURE_OPENAI_BASE`、`AZURE_OPENAI_API_KEY`、`BRIDGE_PROXY_TOKEN` 是否非空。
-- **401 认证错误：** WorkBuddy 的 `apiKey` 必须与 `BRIDGE_PROXY_TOKEN` 完全一致。
-- **Azure 返回 4xx/5xx：** 核对资源基础 URL、部署名称、API 密钥和 Responses API 可用性。Azure 错误详情会以 OpenAI 风格的错误体返回。
-- **没有 reasoning summary 输出：** 部署必须针对请求的 effort 返回 reasoning summary；代理不会自行合成。
-
-## Windows 开机启动任务
-
-手动启动时，在工作区目录的 PowerShell 中运行「启动」一节里的命令，并保持窗口打开；按 `Ctrl+C` 停止代理。
-
-如需登录 Windows 后自动启动：
-
-1. 打开「任务计划程序」，选择「创建任务」。
-2. 在「常规」中将任务命名为 `Azure OpenAI Responses Bridge`，选择「不管用户是否登录都要运行」，并使用拥有该工作区的 Windows 账户。保存时 Windows 可能会要求输入该账户的密码。此选项会以非交互方式运行任务，不会弹出终端窗口；该账户必须能够读取 `.env` 并在工作区写入日志。
-3. 在「触发器」中添加「登录时」，并选择你的 Windows 账户。
-4. 在「操作」中添加「启动程序」。「程序或脚本」填写 Node 22 可执行文件的完整路径（对于上文的托管安装，请将 `%USERPROFILE%` 换成实际用户目录，例如 `C:\Users\<your-user>\.workbuddy\binaries\node\versions\22.22.2-3\node.exe`）；「添加参数」填写 `bridge.js` 的完整路径；「起始于」填写工作区目录，例如 `C:\Users\<your-user>\azure-bridge`。
-5. 保存任务后，在任务计划程序中手动运行一次，并检查 `http://127.0.0.1:8787/healthz` 和任务的「上次运行结果」。本项目尚未创建该任务。需要停止时，可在任务计划程序中结束任务；代理的运行日志写入工作区的 `bridge.log`。
-
-请替换为本机实际路径。代理从自身所在目录读取 `.env` 并写入日志，且仅监听 `127.0.0.1`。
+默认 `store:false`，不实现不透明推理状态连续性；它不关闭提示缓存，也不保证零数据保留或降低费用。GPT-6 使用 `prompt_cache_options`（`ttl:"30m"`），不用旧的 `24h` retention。PTU-M 不支持显式断点。测试只使用离线模拟；实际 WorkBuddy/Azure 验收及其预算须另行批准。Windows 持久任务应配置无限运行、失败重启且不允许实例重叠。完整行为以[兼容性说明](<docs/compatibility.md>)、[分阶段兼容计划](<docs/staged-compatibility.md>)、[审查处置](<docs/review-disposition.md>)和[验收计划](<docs/acceptance.md>)为准。
