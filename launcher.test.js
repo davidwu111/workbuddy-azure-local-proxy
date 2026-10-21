@@ -92,15 +92,26 @@ test("Windows launcher rejects same-port impostors and older builds instead of s
 });
 test("Windows launcher resolves relative executable and env paths before its cwd shift", { skip: !windows, timeout: 120000 }, async t => {
   const port = await probe(t, (_req, res) => { res.statusCode = 404; res.end(); });
-  const file = await fixture(t, port); const temp = path.dirname(file);
-  const shim = path.join(temp, "fixture node.ps1"); const captured = path.join(temp, "runtime args.json");
   const summary = JSON.stringify({ service: "azure-responses-bridge", protocol: "chat-to-responses-v1", build: "adapter-v2.9", configId: "fixture", host: "127.0.0.1", port });
   const psQuote = value => value.replace(/'/g, "''");
-  // This version-reporting fixture records launch arguments instead of running a bridge.
-  await fs.writeFile(shim, `$global:LASTEXITCODE=0\nif ($args -contains '--version') { 'v24.20.0'; return }\nif ($args -contains '--check-config-json') { '${psQuote(summary)}'; return }\nConvertTo-Json -InputObject @($args) -Compress | Set-Content -LiteralPath '${psQuote(captured)}' -Encoding UTF8\n`);
-  assert.equal(await runLauncher('.\\' + path.basename(file), false, { nodePath: '.\\' + path.basename(shim), cwd: temp }), 0);
-  const args = JSON.parse((await fs.readFile(captured, "utf8")).replace(/^\uFEFF/, ""));
-  assert.equal(args[args.indexOf("--env-file") + 1], file);
+  for (const lowercaseDrive of [false, true]) {
+    const fixtureFile = await fixture(t, port);
+    // Hosted Windows TEMP paths can use a lowercase drive letter; Resolve-Path
+    // normalizes it. Exercise that spelling even when the local TEMP does not.
+    const file = lowercaseDrive ? fixtureFile.replace(/^[A-Z]:/i, drive => drive.toLowerCase()) : fixtureFile;
+    const temp = path.dirname(file);
+    const shim = path.join(temp, "fixture node.ps1"); const captured = path.join(temp, "runtime args.json");
+    // This version-reporting fixture records launch arguments instead of running a bridge.
+    await fs.writeFile(shim, `$global:LASTEXITCODE=0\nif ($args -contains '--version') { 'v24.20.0'; return }\nif ($args -contains '--check-config-json') { '${psQuote(summary)}'; return }\nConvertTo-Json -InputObject @($args) -Compress | Set-Content -LiteralPath '${psQuote(captured)}' -Encoding UTF8\n`);
+    assert.equal(await runLauncher('.\\' + path.basename(file), false, { nodePath: '.\\' + path.basename(shim), cwd: temp }), 0);
+    const args = JSON.parse((await fs.readFile(captured, "utf8")).replace(/^\uFEFF/, ""));
+    assert.equal(args.filter(arg => arg === "--env-file").length, 1);
+    const resolvedEnvFile = args[args.indexOf("--env-file") + 1];
+    assert.equal(path.isAbsolute(resolvedEnvFile), true, "runtime env path must be absolute after the cwd shift");
+    // Compare the actual file, not path spelling (drive case and 8.3 aliases
+    // may differ between Node's TEMP and PowerShell's filesystem provider).
+    assert.equal(await fs.realpath(resolvedEnvFile), await fs.realpath(file));
+  }
 });
 test("Windows launcher recognizes matching identity and checks readiness without restarting", { skip: !windows, timeout: 120000 }, async t => {
   const paths = []; let summary;

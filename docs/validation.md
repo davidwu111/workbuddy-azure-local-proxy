@@ -2,6 +2,36 @@
 
 This record describes **local synthetic validation**, not Azure or WorkBuddy acceptance. Official public documentation was fetched without authentication; no inference/API deployment calls, real credentials, WorkBuddy invocation, real tool execution or scheduled-task installation were used. The [real acceptance plan](<acceptance.md>) remains separately approval-gated and **NOT RUN**.
 
+## Windows launcher path assertion follow-up (`adapter-v2.9`)
+
+The subsequent Windows CI failure reported a strict equality assertion in the
+relative-path launcher test. Locally, the original test passes with the normal
+TEMP spelling but fails with `process.env.TEMP = process.env.TEMP.toLowerCase()`:
+PowerShell returns an absolute `C:\...` path while Node's fixture uses `c:\...`.
+Both refer to the same file. The launcher already resolves the executable and
+explicit environment path before `Push-Location`; no launcher behavior change
+was needed for this reproduced failure. The exact hosted actual/expected strings
+were not retrieved, so this is a demonstrated failure mechanism, not independent
+confirmation of the hosted runner's path spelling.
+
+The regression now exercises original and lowercase-drive fixture paths, requires
+exactly one `--env-file` argument with an absolute value, and compares both paths
+through `fs.realpath` instead of comparing raw spellings. A relative, missing or
+wrong-file argument still fails, including after the launcher's cwd shift.
+
+| Check | Result |
+|---|---|
+| Original launcher suite with lowercase TEMP, before fix | **4 passed, 1 failed**; drive-letter case mismatch |
+| Fixed launcher suite, normal and lowercase TEMP | **5/5 passed** each |
+| Node **v24.20.0**, `node run-offline-tests.cjs` | **131/131 passed**, no skips |
+| Node **v22.22.2**, `node run-offline-tests.cjs` | **131/131 passed**, no skips |
+| All JavaScript syntax checks, Node 22/24 | passed |
+| Launcher AST parse and `git diff --check` | passed |
+
+Validation used Windows PowerShell 5.1 launcher subprocesses and the in-process
+offline runner because confined environments do not support test-worker pipes.
+Hosted Windows/Linux CI confirmation remains pending.
+
 ## CI launcher hang fix (`adapter-v2.9`)
 
 The first GitHub Actions run passed syntax checks but failed all four Windows
