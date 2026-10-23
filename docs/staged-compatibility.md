@@ -145,6 +145,6 @@ extension list.
 
 ## Activation
 
-The merged Linux/shared-core build identifies itself as `adapter-v2.10-linux`. It takes effect only in a newly
+The current build identifies itself as `adapter-v2.11-native-create`. It takes effect only in a newly
 started process. The launcher refuses to reuse an older build and never replaces a
 running one automatically; stop the old bridge explicitly before starting again.

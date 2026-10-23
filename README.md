@@ -2,7 +2,7 @@
 
 A dependency-free Node.js adapter (loopback by default; opt-in LAN binding and native TLS): **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
 
-**Evidence boundary:** The integrated Linux/shared-core offline suite passed **146 tests with 4 Linux-only skips (150 total)** on Windows with Node **24.20.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>).
+**Evidence boundary:** The integrated Linux/shared-core offline suite passed **339 of 343 tests (4 Linux-only skips, 0 failures)** on Windows with Node **24.14.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>). The [2026-10-23 review](<docs/review-2026-10-23.md>) records the current open findings and the phase plan.
 
 ## Requirements and migration
 
@@ -79,6 +79,30 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/models
 | `GET` | `/readyz` | Public on the bound interface: readiness, distinct from liveness |
 | `GET` | `/v1/models` | Public on the bound interface: allowed alias list |
 | `POST` | `/v1/chat/completions` | `Authorization: Bearer <BRIDGE_PROXY_TOKEN>` |
+| `POST` | `/v1/responses` | `Authorization: Bearer <BRIDGE_PROXY_TOKEN>`; native Responses create, only when `BRIDGE_NATIVE_RESPONSES=true` and per-alias grants allow the requested features |
+
+## Native Responses route (opt-in)
+
+`POST /v1/responses` exposes the Azure Responses API without Chat translation. It is disabled by default and enabled only with
+`BRIDGE_NATIVE_RESPONSES=true` and an explicit restart. Routing, bearer authentication, TLS and the trusted-origin/redirect rules are identical
+to the Chat route; the outbound target is the configured origin plus `/openai/v1/responses`, and client-supplied Azure or session headers are
+never forwarded.
+
+The route is stateless and deny-by-default. The accepted top-level fields are `model`, `input`, `instructions`, `stream`, `max_output_tokens`,
+`reasoning`, `tools`, `tool_choice`, `parallel_tool_calls`, `text`, `store` and `background` (false/null only). Hosted tools, input media,
+file/vector-store/container IDs and MCP servers require an explicit per-alias grant in `BRIDGE_NATIVE_POLICIES`; plain function tools need no
+grant. Unknown fields fail locally, and recognised-but-deferred fields return `unsupported_parameter` rather than being forwarded.
+
+Provider storage needs three independent opt-ins: `BRIDGE_ALLOW_STORE=true`, `nativePolicies[alias].allowStore`, and `store:true` on the
+request. Background jobs, response/conversation chaining, `include`, and the retrieve/delete/cancel routes are not implemented;
+`background:true`, `previous_response_id`, `conversation` and `include` are rejected locally.
+
+Streaming relays native event types, metadata, ordering and numeric usage. It never fabricates Chat chunks or `[DONE]`, and a mid-stream
+failure emits one bounded `bridge.error` event. Tool calls are validated against the request's declared tools and grants, and are never
+executed locally.
+
+See the [native request contract](<docs/native-responses-api.md>), [feature permissions](<docs/native-feature-permissions.md>),
+[SSE contract](<docs/native-sse-contract.md>) and [design record](<docs/responses-api-design.md>).
 
 Configuration is validated before listening. `/healthz` reports liveness; `/readyz` reports local readiness, **not** that Azure credentials, quota, deployment availability, or WorkBuddy have been verified. Public config identity includes bind host/port and whether TLS is enabled, but deliberately excludes credentials, credential fingerprints and TLS key material. After changing credentials or TLS key/certificate files, explicitly stop/restart the running bridge; matching health identity does not prove credential/key equivalence. Port defaults to 8787; changing host, `BRIDGE_PORT` or TLS also requires updating the WorkBuddy URL. The Windows launcher is a local HTTP/loopback convenience and refuses LAN/TLS configuration; use direct Node for LAN/TLS.
 
@@ -143,7 +167,7 @@ In file mode, `BRIDGE_LOG_PATH` selects the active file (default `bridge.log`). 
 
 Use terminal outcome rather than HTTP 200 alone to judge a stream. First-token timing is the proxy's first text/refusal/summary or validated-tool emission; nonstream timing is completion time, not native Azure TTFT. Safe retry advice is forwarded, not automatically retried. Undeliverable terminal frames on a stalled/disconnected downstream cause closure rather than an unbounded drain wait.
 
-The merged Linux/shared-core build identifies itself as `adapter-v2.10-linux`. It takes effect only in a newly started process: explicitly stop the old bridge before launching again. The launcher refuses to reuse an older build and never replaces it automatically. Existing log lines are not rewritten; earlier UTC (`Z`) records can coexist with new local-offset records. TLS certificate/key path changes and renewals also require an explicit restart; paths and certificate/key material are excluded from public identity.
+The current build identifies itself as `adapter-v2.11-native-create`. It takes effect only in a newly started process: explicitly stop the old bridge before launching again. The launcher refuses to reuse an older build and never replaces it automatically. Existing log lines are not rewritten; earlier UTC (`Z`) records can coexist with new local-offset records. TLS certificate/key path changes and renewals also require an explicit restart; paths and certificate/key material are excluded from public identity.
 
 ## Offline tests and CI
 
@@ -184,6 +208,6 @@ Save, run manually, inspect **Last Run Result**, service/config identity at `/he
 
 ## 中文简要说明
 
-这是默认监听本机 `127.0.0.1` 的 Chat Completions → Azure Responses 转换器；推理仍在 Azure 执行。可通过 `BRIDGE_HOST` 显式选择 LAN IPv4/IPv6 字面地址，并成对配置 `BRIDGE_TLS_CERT`/`BRIDGE_TLS_KEY` 使用原生 HTTPS；相对证书路径以进程工作目录为基准。LAN 上的健康、就绪和模型列表仍无需认证，必须限制防火墙访问并建立客户端证书信任。Linux/systemd 推荐 `BRIDGE_LOG_MODE=console` 交给 journald；默认 `file` 模式需要私有可写目录。详见 [Linux 部署指南](<LINUX.md>)。必须显式配置客户端别名、Azure 部署名称、GPT-6 变体/版本以及可信 HTTPS origin。WorkBuddy 在「设置 → 模型」中填写完整本地 URL 和单独的本地令牌；Custom Protocol 开关只改变 URL 处理，不转换协议。图片能力保持关闭，直到实际客户端与部署获准联合验证。
+这是默认监听本机 `127.0.0.1` 的 Chat Completions → Azure Responses 转换器；推理仍在 Azure 执行。可通过 `BRIDGE_HOST` 显式选择 LAN IPv4/IPv6 字面地址，并成对配置 `BRIDGE_TLS_CERT`/`BRIDGE_TLS_KEY` 使用原生 HTTPS；相对证书路径以进程工作目录为基准。LAN 上的健康、就绪和模型列表仍无需认证，必须限制防火墙访问并建立客户端证书信任。Linux/systemd 推荐 `BRIDGE_LOG_MODE=console` 交给 journald；默认 `file` 模式需要私有可写目录。详见 [Linux 部署指南](<LINUX.md>)。必须显式配置客户端别名、Azure 部署名称、GPT-6 变体/版本以及可信 HTTPS origin。WorkBuddy 在「设置 → 模型」中填写完整本地 URL 和单独的本地令牌；Custom Protocol 开关只改变 URL 处理，不转换协议。图片能力保持关闭，直到实际客户端与部署获准联合验证。可选的原生 `POST /v1/responses` 路由默认关闭，需同时启用 `BRIDGE_NATIVE_RESPONSES=true` 并按别名配置 `BRIDGE_NATIVE_POLICIES`；托管工具、输入媒体、文件/向量库/容器与 MCP 默认拒绝。
 
 默认 `store:false`，不实现不透明推理状态连续性；它不关闭提示缓存，也不保证零数据保留或降低费用。GPT-6 使用 `prompt_cache_options`（`ttl:"30m"`），不用旧的 `24h` retention。PTU-M 不支持显式断点。测试只使用离线模拟；实际 WorkBuddy/Azure 验收及其预算须另行批准。Windows 持久任务应配置无限运行、失败重启且不允许实例重叠。完整行为以[兼容性说明](<docs/compatibility.md>)、[分阶段兼容计划](<docs/staged-compatibility.md>)、[审查处置](<docs/review-disposition.md>)和[验收计划](<docs/acceptance.md>)为准。

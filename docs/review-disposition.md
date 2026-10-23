@@ -47,3 +47,7 @@ Historical main-branch Windows offline suites (not validation of the Linux/share
 In the confined Windows execution environment, default Node test-file isolation needs child stdio pipes, which are unavailable. Use the [in-process offline runner](<../run-offline-tests.cjs>) with `node run-offline-tests.cjs` on Node 22/24. Node 24 also supports `node --test --test-isolation=none *.test.js`; the tested Node 22.22.2 does not support that option. This workaround is not an Azure/client test and does not weaken fixture isolation requirements. The [CI workflow](<../.github/workflows/test.yml>) uses normal `node --test *.test.js` isolation on hosted Windows/Linux runners; configuration of that matrix is not a claim that CI has run.
 
 No real Azure calls, credentials or WorkBuddy interaction were used, and no price/caching/continuity guarantee is made. Confirm the exact environment and budget before separately approving [acceptance](<acceptance.md>).
+
+## Post-update review (2026-10-23)
+
+The F01–F21 table above records the historical baseline reviewed at commit `955b8112a7b58b89e7f949dcb0696cf6ac93efa2` and is unchanged by the native Responses update. That update was reviewed separately in [the 2026-10-23 native review](<review-2026-10-23.md>), which records findings R-01 to R-20 and the phase-by-phase fix plan. The native route's offline coverage described there does not constitute live Azure or installed-client acceptance; no Azure call, production credential or installed WorkBuddy client was used.
