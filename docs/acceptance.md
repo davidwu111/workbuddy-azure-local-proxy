@@ -48,7 +48,7 @@ For PTU-M, do not test breakpoints or explicit no-cache policy as if supported. 
 
 ## Continuity acceptance is a separate future feature
 
-The current bridge is stateless Chat-history replay. It has no stored-response chain or opaque reasoning sidecar. Before any continuity implementation is enabled, establish a reliable authenticated client conversation ID **and branch/history identity** from actual wire evidence; extension round-tripping and timing are not proof of identity.
+The current bridge is stateless Chat-history replay. It has no stored-response chain or opaque reasoning sidecar. Stateful continuity is out of scope for this release by maintainer decision; this section is retained only as the design record that any future implementation must satisfy. Before any continuity implementation is enabled, establish a reliable authenticated client conversation ID **and branch/history identity** from actual wire evidence; extension round-tripping and timing are not proof of identity.
 
 A future design must scope state by authenticated principal, conversation, branch, Azure origin/deployment/variant/version/profile and tool contract; retain exact opaque reasoning/phase/compaction/output items; correlate call IDs; serialize updates or compare-and-swap each branch; deduplicate history and retries; bound total and per-conversation bytes/items/count and TTL; handle response-ID expiry, eviction, restart, cancellation, model/profile changes and missing state safely. Log no opaque state. Define at-rest protection/deletion if state persists. Stored chaining requires deliberate storage consent and provider deletion/retention handling; opaque replay can use `store:false` but still sends inference to Azure.
 

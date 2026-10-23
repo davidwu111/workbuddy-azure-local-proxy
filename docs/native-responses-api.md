@@ -71,7 +71,7 @@ Example shape (use an approved alias and your local token; this document does no
 }
 ```
 
-Background jobs, conversation/response-ID chaining, agent references, context management, stateful endpoints, and unsupported request controls remain blocked. Hosted tools, input media, and resource IDs require exact configured per-alias permissions; see [feature policy](<native-feature-permissions.md>). Caching, sampling, metadata and other optional settings are not silently dropped unless they take an exact inert default listed above.
+Background jobs, conversation/response-ID chaining, agent references, context management, stateful endpoints, and unsupported request controls remain blocked. These are out of scope for this release by maintainer decision; they are not scheduled work. Hosted tools, input media, and resource IDs require exact configured per-alias permissions; see [feature policy](<native-feature-permissions.md>). Caching, sampling, metadata and other optional settings are not silently dropped unless they take an exact inert default listed above.
 
 ## Native output and permissions
 
