@@ -1,8 +1,8 @@
 # Azure GPT-6 Responses Bridge
 
-A dependency-free Node.js adapter (loopback by default; opt-in LAN binding and native TLS): **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
+A dependency-free Node.js adapter (loopback by default; opt-in LAN binding and native TLS): **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. Scope is deliberately stateless: response/conversation chaining, background jobs, and the retrieve/cancel/delete routes are out of scope by decision, not merely unfinished. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
 
-**Evidence boundary:** The integrated Linux/shared-core offline suite passed **146 tests with 4 Linux-only skips (150 total)** on Windows with Node **24.20.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>).
+**Evidence boundary:** The integrated Linux/shared-core offline suite passed **379 of 383 tests (4 Linux-only skips, 0 failures)** on Windows with Node **24.14.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>). The [2026-10-23 review](<docs/review-2026-10-23.md>) records the current open findings and the phase plan.
 
 ## Requirements and migration
 
@@ -79,6 +79,43 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/models
 | `GET` | `/readyz` | Public on the bound interface: readiness, distinct from liveness |
 | `GET` | `/v1/models` | Public on the bound interface: allowed alias list |
 | `POST` | `/v1/chat/completions` | `Authorization: Bearer <BRIDGE_PROXY_TOKEN>` |
+| `POST` | `/v1/responses` | `Authorization: Bearer <BRIDGE_PROXY_TOKEN>`; native Responses create, only when `BRIDGE_NATIVE_RESPONSES=true` and per-alias grants allow the requested features |
+
+## Native Responses route (opt-in)
+
+`POST /v1/responses` exposes the Azure Responses API without Chat translation. It is disabled by default and enabled only with
+`BRIDGE_NATIVE_RESPONSES=true` and an explicit restart. Routing, bearer authentication, TLS and the trusted-origin/redirect rules are identical
+to the Chat route; the outbound target is the configured origin plus `/openai/v1/responses`, and client-supplied Azure or session headers are
+never forwarded.
+
+The route is stateless and deny-by-default. Every field added in this revision is nullable: `null` means unset and is never forwarded. Unknown fields fail locally,
+and exact inert defaults (`metadata:{}`, `include:[]`, `truncation:"disabled"`, `top_logprobs:0`, `service_tier:"auto"`, `temperature:1`, `top_p:1`) are dropped
+rather than forwarded. Hosted tools, input media, file/vector-store/container IDs and MCP servers require an explicit per-alias grant in `BRIDGE_NATIVE_POLICIES`;
+plain function tools need no grant. Image generation additionally needs an operator-supplied routing header, `models.<alias>.nativeHeaders`
+setting `x-ms-oai-image-generation-deployment`: the bridge forwards no client headers, so that value can only come from configuration, and
+startup fails if the grant is present without it. `include:["reasoning.encrypted_content"]` is supported end to end: encrypted reasoning items are relayed untouched and are never
+parsed, logged or persisted. `BRIDGE_INSTRUCTION_POLICY` applies to native input exactly as it does on the Chat route.
+
+- Fully forwarded when valid: `model`, `input`, `instructions`, `stream`, `max_output_tokens`, `reasoning`, `tools`, `tool_choice`, `parallel_tool_calls`, `text`,
+  `prompt_cache_key`, `prompt_cache_options`, `prompt_cache_retention`, `metadata`, `safety_identifier`, `user`, `max_tool_calls`, `service_tier` and `truncation`.
+- Conditionally gated: `store` needs the three independent opt-ins below and `background` stays false/null; `temperature` and `top_p` require the profile's
+  `samplingEfforts` at the effective effort, where an exact `1` is inert and dropped first; `prompt_cache_breakpoint:{mode:"explicit"}` requires `cacheBreakpoints`
+  on the profile and is rejected on PTU-M; `include` admits at most 16 known values, and a tool-scoped value requires that tool on the same request; `top_logprobs`
+  requires `include:["message.output_text.logprobs"]`.
+- Rejected locally: `prompt`, chaining (`previous_response_id`, `conversation`, `agent_reference`, `agent_session_id`), `background:true`, and the
+  retrieve/cancel/delete routes.
+
+Provider storage needs three independent opt-ins: `BRIDGE_ALLOW_STORE=true`, `nativePolicies[alias].allowStore`, and `store:true` on the
+request.
+
+Streaming relays native event types, metadata, ordering and numeric usage. It never fabricates Chat chunks or `[DONE]`, and a mid-stream
+failure emits one bounded `bridge.error` event. Tool calls are validated against the request's declared tools and grants, and are never
+executed locally.
+
+See the [native request contract](<docs/native-responses-api.md>), [feature permissions](<docs/native-feature-permissions.md>),
+[SSE contract](<docs/native-sse-contract.md>) and [design record](<docs/responses-api-design.md>). Native behaviour was captured
+once on 2026-10-23 under an approved reference; the six sanitized captures replay in `captured-fixtures.test.js`. See the
+[live verification procedure](<docs/live-verification.md>) for scope and limits.
 
 Configuration is validated before listening. `/healthz` reports liveness; `/readyz` reports local readiness, **not** that Azure credentials, quota, deployment availability, or WorkBuddy have been verified. Public config identity includes bind host/port and whether TLS is enabled, but deliberately excludes credentials, credential fingerprints and TLS key material. After changing credentials or TLS key/certificate files, explicitly stop/restart the running bridge; matching health identity does not prove credential/key equivalence. Port defaults to 8787; changing host, `BRIDGE_PORT` or TLS also requires updating the WorkBuddy URL. The Windows launcher is a local HTTP/loopback convenience and refuses LAN/TLS configuration; use direct Node for LAN/TLS.
 
@@ -99,10 +136,10 @@ The public client docs do not establish a full wire contract for `reasoning_cont
 The [compatibility contract](<docs/compatibility.md>) enumerates supported, rejected, and ignored fields. The [staged compatibility plan](<docs/staged-compatibility.md>) explains the four-way classification and the WorkBuddy 5.8.3 field policy. Important policies:
 
 - Standard Chat Completions fields are **recognised**, then classified as mapped, deliberately normalized, standard-but-unsupported (`unsupported_parameter`), or unknown (`unknown_parameter`). A field is never accepted and then silently dropped.
-- Exact disabled/unset defaults are normalized (nullable options, zero penalties, empty bias/stop, text-only modalities, disabled logprobs). Enabled semantic controls the bridge cannot honour are rejected rather than clamped or replaced.
+- Exact disabled/unset defaults are normalized (nullable options, zero penalties, empty bias/stop, text-only modalities, `service_tier:"auto"`, `moderation:"auto"`, and the disabled `logprobs:false` + `top_logprobs:0` pair). Enabled semantic controls the bridge cannot honour are rejected rather than clamped or replaced.
 - Explicit supported effort is preserved, including `none` for Sol/Luna; Astra/6.1 Sol reject `none`. A profile-rejected effort is `unsupported_parameter`, never substituted.
 - Sampling combinations are gated by effective effort/profile. Default policy rejects incompatible values. `BRIDGE_SAMPLING_POLICY=drop-defaults` only removes incompatible `temperature` or `top_p` exactly equal to `1`, and reports field names; it never silently replaces effort.
-- `BRIDGE_INSTRUCTION_POLICY=reject-mixed` rejects mixing system and developer roles; other explicit policies preserve or normalize roles in chronological order, with block boundaries intact.
+- `BRIDGE_INSTRUCTION_POLICY=reject-mixed` rejects mixing system and developer roles on both the Chat and native routes; other explicit policies preserve or normalize roles in chronological order, with block boundaries intact.
 - WorkBuddy's message-level `startsNewUserRequest` (boolean), `agent` and `conversationRequestId` (bounded opaque JSON) are validated and ignored by the stateless adapter. None is forwarded to Azure, used as provider metadata, or used to infer session/branch identity. `BRIDGE_CLIENT_METADATA_FIELDS` extends the named list; `BRIDGE_CLIENT_METADATA_MODE=auto` (default) also absorbs any other non-standard message key after bounded validation, recording only its name. Standard/reserved message fields and unknown top-level fields are still rejected in both modes.
 - Function tools default omitted or `null` `strict` to explicit `false`; explicit strictness and supported structured-output formats are preserved. Streaming tool-call fields are buffered until the terminal response validates complete calls; text/refusal/summary can still stream incrementally. This intentional tool latency prevents partial-call execution, but still requires actual WorkBuddy verification.
 - `store:false` is sent by default; `store:null` resolves to that declared policy. Enabling provider storage requires explicit `BRIDGE_ALLOW_STORE=true` and a request/default storage opt-in. **Stored chaining is still not implemented.** Provider storage and prompt caching are separate controls: `store:false` does not disable prompt caching, keep inference local, or guarantee Zero Data Retention.
@@ -111,7 +148,7 @@ The [compatibility contract](<docs/compatibility.md>) enumerates supported, reje
 
 ## GPT-6 cache controls and cost
 
-The bridge validates `prompt_cache_key`, `prompt_cache_options: {mode: "implicit"|"explicit", ttl: "30m"}`, and supported content-block `prompt_cache_breakpoint: {mode: "explicit"}`. The bridge does not insert automatic explicit breakpoints. Optional environment defaults are `BRIDGE_PROMPT_CACHE_KEY` and JSON `BRIDGE_PROMPT_CACHE_OPTIONS`. Legacy `prompt_cache_retention` is rejected; `24h` is not the GPT-6 fix.
+The bridge validates `prompt_cache_key`, `prompt_cache_options: {mode: "implicit"|"explicit", ttl: "30m"}`, and supported content-block `prompt_cache_breakpoint: {mode: "explicit"}`. The bridge does not insert automatic explicit breakpoints. Optional environment defaults are `BRIDGE_PROMPT_CACHE_KEY` and JSON `BRIDGE_PROMPT_CACHE_OPTIONS`. On the Chat route, legacy `prompt_cache_retention` is rejected (`24h` is not the GPT-6 fix); the native route forwards `"in_memory"` or `"24h"` as an explicit field.
 
 For Standard pay-as-you-go, explicit mode **without breakpoints** disables caching and cache-write charges. Implicit mode uses Azure's default policy plus supplied breakpoints. PTU-M supports automatic caching, but not explicit breakpoints, explicit no-cache policy, or cache-write counters; declare `profile.deploymentType: "ptu-m"` to enforce this locally.
 
@@ -133,7 +170,7 @@ Limits are positive configurable **bytes**, not model-token limits. Tune with wo
 
 `responseBytes` bounds upstream total and encoded downstream independently; `sseBufferBytes` constrains active event framing and retained output separately, not total process RSS. Requests above `maxConcurrent` wait for a slot, bounded by `maxQueue` and `timeouts.capacityWaitMs` (default 30 s); set `maxQueue: 0` for immediate 429. A capacity rejection is `rate_limit_error` with `Retry-After: 1`, and queue time is logged as `queuedFor`. Parallel agent workflows need a cap well above a single conversation's request count. Required MIME is JSON for uploads/nonstream upstream, SSE for streaming upstream.
 
-`BRIDGE_TIMEOUTS` accepts positive milliseconds: `uploadMs=30000`, `upstreamIdleMs=300000`, `downstreamStallMs=30000`, `totalMs=1800000`, `shutdownMs=5000`. Upload, upstream idle, downstream stall and total lifetime are distinct; cancellation remains active while awaiting headers/reader/drain. `BRIDGE_MAX_OUTPUT_TOKENS` defaults to 128000 and bounds the forwarded output budget along with the profile cap. Reasoning and visible output share this cap; a low cap can be spent before an answer appears. The bridge does not tokenize/count full input locally.
+`BRIDGE_TIMEOUTS` accepts positive milliseconds: `uploadMs=30000`, `upstreamIdleMs=300000`, `downstreamStallMs=30000`, `totalMs=1800000`, `shutdownMs=5000`. Upload, upstream idle, downstream stall and total lifetime are distinct; cancellation remains active while awaiting headers/reader/drain. `BRIDGE_MAX_OUTPUT_TOKENS` defaults to 128000 and bounds the forwarded output budget along with the profile cap. Clients that omit a budget receive `BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS` (defaults to the ceiling, never above the route profile cap), while explicit values above the ceiling are rejected rather than clamped. Reasoning and visible output share this cap; a low cap can be spent before an answer appears. The bridge does not tokenize/count full input locally.
 
 Operational logs use the Node process's local timezone with ISO timestamps and an explicit UTC offset (for example `2026-10-21T11:45:08.951+08:00`), and allowlisted fields only; they omit prompts, tool arguments, opaque reasoning and credentials. Logs are not Azure billing or a full audit trail.
 
@@ -143,7 +180,7 @@ In file mode, `BRIDGE_LOG_PATH` selects the active file (default `bridge.log`). 
 
 Use terminal outcome rather than HTTP 200 alone to judge a stream. First-token timing is the proxy's first text/refusal/summary or validated-tool emission; nonstream timing is completion time, not native Azure TTFT. Safe retry advice is forwarded, not automatically retried. Undeliverable terminal frames on a stalled/disconnected downstream cause closure rather than an unbounded drain wait.
 
-The merged Linux/shared-core build identifies itself as `adapter-v2.10-linux`. It takes effect only in a newly started process: explicitly stop the old bridge before launching again. The launcher refuses to reuse an older build and never replaces it automatically. Existing log lines are not rewritten; earlier UTC (`Z`) records can coexist with new local-offset records. TLS certificate/key path changes and renewals also require an explicit restart; paths and certificate/key material are excluded from public identity.
+The current build identifies itself as `adapter-v2.11-native-create`. It takes effect only in a newly started process: explicitly stop the old bridge before launching again. The launcher refuses to reuse an older build and never replaces it automatically. Existing log lines are not rewritten; earlier UTC (`Z`) records can coexist with new local-offset records. TLS certificate/key path changes and renewals also require an explicit restart; paths and certificate/key material are excluded from public identity.
 
 ## Offline tests and CI
 
@@ -184,6 +221,6 @@ Save, run manually, inspect **Last Run Result**, service/config identity at `/he
 
 ## 中文简要说明
 
-这是默认监听本机 `127.0.0.1` 的 Chat Completions → Azure Responses 转换器；推理仍在 Azure 执行。可通过 `BRIDGE_HOST` 显式选择 LAN IPv4/IPv6 字面地址，并成对配置 `BRIDGE_TLS_CERT`/`BRIDGE_TLS_KEY` 使用原生 HTTPS；相对证书路径以进程工作目录为基准。LAN 上的健康、就绪和模型列表仍无需认证，必须限制防火墙访问并建立客户端证书信任。Linux/systemd 推荐 `BRIDGE_LOG_MODE=console` 交给 journald；默认 `file` 模式需要私有可写目录。详见 [Linux 部署指南](<LINUX.md>)。必须显式配置客户端别名、Azure 部署名称、GPT-6 变体/版本以及可信 HTTPS origin。WorkBuddy 在「设置 → 模型」中填写完整本地 URL 和单独的本地令牌；Custom Protocol 开关只改变 URL 处理，不转换协议。图片能力保持关闭，直到实际客户端与部署获准联合验证。
+这是默认监听本机 `127.0.0.1` 的 Chat Completions → Azure Responses 转换器；推理仍在 Azure 执行。可通过 `BRIDGE_HOST` 显式选择 LAN IPv4/IPv6 字面地址，并成对配置 `BRIDGE_TLS_CERT`/`BRIDGE_TLS_KEY` 使用原生 HTTPS；相对证书路径以进程工作目录为基准。LAN 上的健康、就绪和模型列表仍无需认证，必须限制防火墙访问并建立客户端证书信任。Linux/systemd 推荐 `BRIDGE_LOG_MODE=console` 交给 journald；默认 `file` 模式需要私有可写目录。详见 [Linux 部署指南](<LINUX.md>)。必须显式配置客户端别名、Azure 部署名称、GPT-6 变体/版本以及可信 HTTPS origin。WorkBuddy 在「设置 → 模型」中填写完整本地 URL 和单独的本地令牌；Custom Protocol 开关只改变 URL 处理，不转换协议。图片能力保持关闭，直到实际客户端与部署获准联合验证。可选的原生 `POST /v1/responses` 路由默认关闭，需同时启用 `BRIDGE_NATIVE_RESPONSES=true` 并按别名配置 `BRIDGE_NATIVE_POLICIES`；托管工具、输入媒体、文件/向量库/容器与 MCP 默认拒绝。
 
 默认 `store:false`，不实现不透明推理状态连续性；它不关闭提示缓存，也不保证零数据保留或降低费用。GPT-6 使用 `prompt_cache_options`（`ttl:"30m"`），不用旧的 `24h` retention。PTU-M 不支持显式断点。测试只使用离线模拟；实际 WorkBuddy/Azure 验收及其预算须另行批准。Windows 持久任务应配置无限运行、失败重启且不允许实例重叠。完整行为以[兼容性说明](<docs/compatibility.md>)、[分阶段兼容计划](<docs/staged-compatibility.md>)、[审查处置](<docs/review-disposition.md>)和[验收计划](<docs/acceptance.md>)为准。

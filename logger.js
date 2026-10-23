@@ -33,9 +33,9 @@ const safeNormalizedField = value => {
   return Boolean(masked && SAFE_METADATA_KEY.test(masked) && masked === key);
 };
 
-const STRING_FIELDS = new Set(["requestId", "upstreamRequestId", "deployment", "variant", "version", "model", "effort", "mode", "context", "outcome", "finishReason", "code", "method", "path", "host", "build", "configId"]);
+const STRING_FIELDS = new Set(["requestId", "upstreamRequestId", "deployment", "variant", "version", "model", "effort", "mode", "context", "outcome", "finishReason", "code", "method", "path", "host", "build", "configId", "eventName"]);
 const NUMBER_FIELDS = new Set(["status", "latencyMs", "firstTokenMs", "port", "active", "dropped", "input_tokens", "output_tokens", "total_tokens", "reasoning_tokens", "cached_tokens", "cache_write_tokens", "bytesOut", "queuedFor"]);
-const SAFE_PATHS = new Set(["/healthz", "/readyz", "/v1/models", "/v1/chat/completions"]);
+const SAFE_PATHS = new Set(["/healthz", "/readyz", "/v1/models", "/v1/chat/completions", "/v1/responses"]);
 const USAGE_FIELDS = new Set(["input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cached_tokens", "cache_write_tokens", "input_tokens_details", "output_tokens_details", "prompt_tokens_details", "completion_tokens_details"]);
 function safeUsage(value, depth = 0) {
   if (!value || typeof value !== "object" || Array.isArray(value) || depth > 2) return undefined;

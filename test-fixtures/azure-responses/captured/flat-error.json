@@ -1,0 +1,28 @@
+{
+  "shape": "flat-error",
+  "capturedAt": "2026-10-23T05:57:23.602Z",
+  "approval": "approved-yefan",
+  "endpoint": "/v1/responses",
+  "status": 400,
+  "contentType": "application/json; charset=utf-8",
+  "request": {
+    "model": "gpt-6-luna",
+    "input": "Answer with one word: ok.",
+    "include": [
+      "message.output_text.logprobs"
+    ],
+    "top_logprobs": 1,
+    "max_output_tokens": 2048,
+    "stream": true
+  },
+  "events": [],
+  "response": {
+    "error": {
+      "message": "logprobs are not supported with reasoning models.",
+      "type": "invalid_request_error",
+      "code": "unsupported_parameter",
+      "param": "include"
+    }
+  },
+  "notes": "provider error shape"
+}

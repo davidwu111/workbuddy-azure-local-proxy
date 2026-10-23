@@ -1,5 +1,6 @@
 "use strict";
 const { extractResponse } = require("./adapter");
+const { CHAT_NOOP_EVENTS, CHAT_SUPPRESSED_EVENTS } = require("./native-events");
 function upstreamSourceError(source, fallback = "Upstream response failed") {
   return Object.assign(transportError(typeof source?.code === "string" ? source.code : "upstream_stream_error", typeof source?.message === "string" ? source.message : fallback),
     { type: typeof source?.type === "string" ? source.type : "upstream_error", param: source?.param });
@@ -154,8 +155,18 @@ class SseWriter {
     } catch { this.res.destroy(); }
   }
 }
-const NOOP_EVENTS = new Set(["response.content_part.added", "response.content_part.done", "response.output_text.done", "response.refusal.done", "response.reasoning_summary_part.added", "response.reasoning_summary_part.done", "response.reasoning_summary_text.done", "response.output_text.annotation.added"]);
-async function streamResponse(upstream, writer, { alias, limits, timeouts, signal, includeUsage, validateTools, onFirstToken, onUsage }) {
+const SAFE_EVENT_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
+function boundedEventName(name, secrets = []) {
+  return typeof name === "string" && SAFE_EVENT_NAME.test(name) && !secrets.some(secret => typeof secret === "string" && secret && name.includes(secret)) ? name : undefined;
+}
+function withEventName(error, name, secrets) {
+  if (error && typeof error === "object" && error.eventName === undefined && Object.isExtensible(error)) {
+    const eventName = boundedEventName(name, secrets);
+    if (eventName) error.eventName = eventName;
+  }
+  return error;
+}
+async function streamResponse(upstream, writer, { alias, limits, timeouts, signal, includeUsage, validateTools, onFirstToken, onUsage, secrets = [] }) {
   let id = "chatcmpl-response", responseId, created = 0, roleSent = false, retained = 0, displayBytes = 0;
   const textStore = new ByteStore(limits.sseBufferBytes * 2), refusalStore = new ByteStore(limits.sseBufferBytes * 2), reasoningStore = new ByteStore(limits.sseBufferBytes * 2);
   const items = new Map();
@@ -186,78 +197,88 @@ async function streamResponse(upstream, writer, { alias, limits, timeouts, signa
     if (event.event && payload.type && event.event !== payload.type) throw transportError("sse_event_conflict", "Upstream SSE event/type conflict");
     const name = event.event || payload.type;
     if (typeof name !== "string" || !name) throw transportError("missing_sse_type", "Upstream SSE event has no type");
-    if (name === "response.created" || name === "response.in_progress") {
-      if (!payload.response || typeof payload.response !== "object") throw transportError("invalid_sse_response", "Upstream SSE response is invalid");
-      if (name === "response.created") {
-        if (typeof payload.response.id === "string" && payload.response.id) { if (responseId && responseId !== payload.response.id) throw transportError("sse_identity_conflict", "Upstream SSE response identity conflicts"); responseId = payload.response.id; id = `chatcmpl-${responseId}`; }
-        if (Number.isInteger(payload.response.created_at) && payload.response.created_at >= 0) created = payload.response.created_at;
+    try {
+      if (name === "response.created" || name === "response.in_progress" || name === "response.queued") {
+        if (!payload.response || typeof payload.response !== "object") throw transportError("invalid_sse_response", "Upstream SSE response is invalid");
+        if (name === "response.created" || name === "response.queued") {
+          if (typeof payload.response.id === "string" && payload.response.id) { if (responseId && responseId !== payload.response.id) throw transportError("sse_identity_conflict", "Upstream SSE response identity conflicts"); responseId = payload.response.id; id = `chatcmpl-${responseId}`; }
+          if (Number.isInteger(payload.response.created_at) && payload.response.created_at >= 0) created = payload.response.created_at;
+        }
+        // A queued notification establishes identity only: no Chat role chunk and no terminal outcome.
+        if (name === "response.created") await role();
+      } else if (CHAT_SUPPRESSED_EVENTS.has(name)) {
+        const field = name.endsWith(".delta") ? "delta" : "text";
+        if (typeof payload[field] !== "string") throw transportError("invalid_sse_reasoning_text", "Upstream SSE raw reasoning text must be a string");
+        // Intentionally discarded: raw reasoning never becomes Chat content, reasoning_content, or a log field.
+      } else if (name === "response.output_text.delta") await emitText("content", payload.delta);
+      else if (name === "response.refusal.delta") await emitText("refusal", payload.delta);
+      else if (name === "response.reasoning_summary_text.delta") await emitText("reasoning_content", payload.delta);
+      else if (name === "response.output_item.added") {
+        if (items.has(payload.output_index)) throw transportError("duplicate_sse_item", "Upstream SSE repeats an output item");
+        save(payload.output_index, payload.item, false);
+      } else if (name === "response.function_call_arguments.delta") {
+        const state = items.get(payload.output_index);
+        if (!state || state.done || state.item.type !== "function_call" || (payload.item_id !== undefined && payload.item_id !== state.item.id) || typeof payload.delta !== "string" || (state.item.arguments !== undefined && typeof state.item.arguments !== "string")) throw transportError("invalid_sse_tool_delta", "Upstream SSE function arguments have no active call");
+        const added = Buffer.byteLength(JSON.stringify(payload.delta)) - 2;
+        retained += added; state.bytes += added; check(); state.args.append(Buffer.from(payload.delta, "utf16le"));
+      } else if (name === "response.function_call_arguments.done") {
+        const state = items.get(payload.output_index);
+        if (!state || state.item.type !== "function_call" || (payload.item_id !== undefined && payload.item_id !== state.item.id) || typeof payload.arguments !== "string") throw transportError("invalid_sse_tool_done", "Upstream SSE function arguments are invalid");
+        if (!payload.arguments.startsWith(argumentsOf(state))) throw transportError("sse_tool_conflict", "Upstream SSE function arguments conflict");
+        save(payload.output_index, { ...state.item, arguments: payload.arguments }, state.done);
+      } else if (name === "response.output_item.done") {
+        const state = items.get(payload.output_index);
+        if (state?.item.type === "function_call" && (state.item.call_id !== payload.item?.call_id || state.item.name !== payload.item?.name || (typeof payload.item?.arguments !== "string" || !payload.item.arguments.startsWith(argumentsOf(state))))) throw transportError("sse_tool_conflict", "Upstream SSE function call conflicts with completed item");
+        save(payload.output_index, payload.item, true);
+      } else if (["response.completed", "response.incomplete", "response.failed", "response.cancelled"].includes(name)) {
+        const response = payload.response;
+        if (!response || typeof response !== "object" || response.status !== name.slice(9)) throw transportError("invalid_sse_terminal", "Upstream SSE terminal response status is invalid");
+        onUsage?.(response.usage);
+        if (responseId && response.id !== undefined && response.id !== responseId) throw transportError("sse_identity_conflict", "Upstream SSE response identity conflicts");
+        // Full terminal output is authoritative. A missing array can be reconstructed
+        // only from explicitly done items, never from partial tool argument deltas.
+        const done = [...items.entries()].sort((a, b) => a[0] - b[0]).filter(([, s]) => s.done).map(([, s]) => s.item);
+        const terminal = response.output === undefined && done.length ? { ...response, output: done } : response;
+        validateTools?.(terminal);
+        const trackedCalls = new Map();
+        for (const state of items.values()) if (state.item.type === "function_call") {
+          if (trackedCalls.has(state.item.call_id)) throw transportError("duplicate_sse_call", "Upstream SSE repeats a function call identity");
+          trackedCalls.set(state.item.call_id, state);
+        }
+        const terminalCalls = Array.isArray(terminal.output) ? terminal.output.filter(item => item?.type === "function_call") : [];
+        if (response.status === "completed" && Array.isArray(terminal.output)) {
+          const finalIds = new Set(terminalCalls.map(item => item.call_id));
+          for (const callId of trackedCalls.keys()) if (!finalIds.has(callId)) throw transportError("missing_terminal_tool", "Upstream terminal output omitted a generated function call");
+        }
+        for (const item of terminalCalls) {
+          const state = trackedCalls.get(item.call_id);
+          if (state && (state.item.name !== item.name || (typeof item.arguments !== "string" || !item.arguments.startsWith(argumentsOf(state))))) throw transportError("sse_tool_conflict", "Upstream SSE function call conflicts with terminal output");
+        }
+        const mapped = extractResponse(terminal, alias); const message = mapped.choices[0].message;
+        const text = textStore.take().toString("utf16le"), refusal = refusalStore.take().toString("utf16le"), reasoning = reasoningStore.take().toString("utf16le");
+        if (!roleSent) { id = mapped.id; created = mapped.created; }
+        for (const [field, sent, final] of [["content", text, message.content], ["refusal", refusal, message.refusal], ["reasoning_content", reasoning, message.reasoning_content]]) {
+          if (typeof final !== "string") { if (sent) throw transportError("sse_text_conflict", "Upstream terminal output omitted streamed material"); continue; }
+          if (!final.startsWith(sent)) throw transportError("sse_text_conflict", "Upstream SSE text conflicts with terminal output");
+          const suffix = final.slice(sent.length);
+          if (suffix) { await role(); onFirstToken?.(); await writer.emit(chunk({ [field]: suffix })); }
+        }
         await role();
-      }
-    } else if (name === "response.output_text.delta") await emitText("content", payload.delta);
-    else if (name === "response.refusal.delta") await emitText("refusal", payload.delta);
-    else if (name === "response.reasoning_summary_text.delta") await emitText("reasoning_content", payload.delta);
-    else if (name === "response.output_item.added") {
-      if (items.has(payload.output_index)) throw transportError("duplicate_sse_item", "Upstream SSE repeats an output item");
-      save(payload.output_index, payload.item, false);
-    } else if (name === "response.function_call_arguments.delta") {
-      const state = items.get(payload.output_index);
-      if (!state || state.done || state.item.type !== "function_call" || (payload.item_id !== undefined && payload.item_id !== state.item.id) || typeof payload.delta !== "string" || (state.item.arguments !== undefined && typeof state.item.arguments !== "string")) throw transportError("invalid_sse_tool_delta", "Upstream SSE function arguments have no active call");
-      const added = Buffer.byteLength(JSON.stringify(payload.delta)) - 2;
-      retained += added; state.bytes += added; check(); state.args.append(Buffer.from(payload.delta, "utf16le"));
-    } else if (name === "response.function_call_arguments.done") {
-      const state = items.get(payload.output_index);
-      if (!state || state.item.type !== "function_call" || (payload.item_id !== undefined && payload.item_id !== state.item.id) || typeof payload.arguments !== "string") throw transportError("invalid_sse_tool_done", "Upstream SSE function arguments are invalid");
-      if (!payload.arguments.startsWith(argumentsOf(state))) throw transportError("sse_tool_conflict", "Upstream SSE function arguments conflict");
-      save(payload.output_index, { ...state.item, arguments: payload.arguments }, state.done);
-    } else if (name === "response.output_item.done") {
-      const state = items.get(payload.output_index);
-      if (state?.item.type === "function_call" && (state.item.call_id !== payload.item?.call_id || state.item.name !== payload.item?.name || (typeof payload.item?.arguments !== "string" || !payload.item.arguments.startsWith(argumentsOf(state))))) throw transportError("sse_tool_conflict", "Upstream SSE function call conflicts with completed item");
-      save(payload.output_index, payload.item, true);
-    } else if (["response.completed", "response.incomplete", "response.failed", "response.cancelled"].includes(name)) {
-      const response = payload.response;
-      if (!response || typeof response !== "object" || response.status !== name.slice(9)) throw transportError("invalid_sse_terminal", "Upstream SSE terminal response status is invalid");
-      onUsage?.(response.usage);
-      if (responseId && response.id !== undefined && response.id !== responseId) throw transportError("sse_identity_conflict", "Upstream SSE response identity conflicts");
-      // Full terminal output is authoritative. A missing array can be reconstructed
-      // only from explicitly done items, never from partial tool argument deltas.
-      const done = [...items.entries()].sort((a, b) => a[0] - b[0]).filter(([, s]) => s.done).map(([, s]) => s.item);
-      const terminal = response.output === undefined && done.length ? { ...response, output: done } : response;
-      validateTools?.(terminal);
-      const trackedCalls = new Map();
-      for (const state of items.values()) if (state.item.type === "function_call") {
-        if (trackedCalls.has(state.item.call_id)) throw transportError("duplicate_sse_call", "Upstream SSE repeats a function call identity");
-        trackedCalls.set(state.item.call_id, state);
-      }
-      const terminalCalls = Array.isArray(terminal.output) ? terminal.output.filter(item => item?.type === "function_call") : [];
-      if (response.status === "completed" && Array.isArray(terminal.output)) {
-        const finalIds = new Set(terminalCalls.map(item => item.call_id));
-        for (const callId of trackedCalls.keys()) if (!finalIds.has(callId)) throw transportError("missing_terminal_tool", "Upstream terminal output omitted a generated function call");
-      }
-      for (const item of terminalCalls) {
-        const state = trackedCalls.get(item.call_id);
-        if (state && (state.item.name !== item.name || (typeof item.arguments !== "string" || !item.arguments.startsWith(argumentsOf(state))))) throw transportError("sse_tool_conflict", "Upstream SSE function call conflicts with terminal output");
-      }
-      const mapped = extractResponse(terminal, alias); const message = mapped.choices[0].message;
-      const text = textStore.take().toString("utf16le"), refusal = refusalStore.take().toString("utf16le"), reasoning = reasoningStore.take().toString("utf16le");
-      if (!roleSent) { id = mapped.id; created = mapped.created; }
-      for (const [field, sent, final] of [["content", text, message.content], ["refusal", refusal, message.refusal], ["reasoning_content", reasoning, message.reasoning_content]]) {
-        if (typeof final !== "string") { if (sent) throw transportError("sse_text_conflict", "Upstream terminal output omitted streamed material"); continue; }
-        if (!final.startsWith(sent)) throw transportError("sse_text_conflict", "Upstream SSE text conflicts with terminal output");
-        const suffix = final.slice(sent.length);
-        if (suffix) { await role(); onFirstToken?.(); await writer.emit(chunk({ [field]: suffix })); }
-      }
-      await role();
-      if (message.tool_calls?.length) { onFirstToken?.(); await writer.emit(chunk({ tool_calls: message.tool_calls.map((call, index) => ({ index, ...call })) })); }
-      const metadata = { ...(message.annotations ? { annotations: message.annotations } : {}) };
-      const extra = { ...(mapped.bridge_warnings ? { bridge_warnings: mapped.bridge_warnings } : {}), ...(Object.hasOwn(mapped, "azure_content_filters") ? { azure_content_filters: mapped.azure_content_filters } : {}) };
-      const frames = [chunk(metadata, mapped.choices[0].finish_reason, undefined, extra)];
-      if (includeUsage && mapped.usage) frames.push(chunk(null, null, mapped.usage));
-      await writer.finish(frames);
-      const finishReason = mapped.choices[0].finish_reason;
-      const outcome = finishReason === "length" ? "incomplete" : finishReason === "content_filter" ? "content_filter" : mapped.bridge_warnings ? "partial" : "completed";
-      return { outcome, finishReason, usage: mapped.usage, rawUsage: response.usage };
-    } else if (name === "error") throw upstreamSourceError(payload.error || payload);
-    else if (!NOOP_EVENTS.has(name)) throw transportError("unsupported_sse_event", "Upstream SSE event is unsupported");
+        if (message.tool_calls?.length) { onFirstToken?.(); await writer.emit(chunk({ tool_calls: message.tool_calls.map((call, index) => ({ index, ...call })) })); }
+        const metadata = { ...(message.annotations ? { annotations: message.annotations } : {}) };
+        const extra = { ...(mapped.bridge_warnings ? { bridge_warnings: mapped.bridge_warnings } : {}), ...(Object.hasOwn(mapped, "azure_content_filters") ? { azure_content_filters: mapped.azure_content_filters } : {}) };
+        const frames = [chunk(metadata, mapped.choices[0].finish_reason, undefined, extra)];
+        if (includeUsage && mapped.usage) frames.push(chunk(null, null, mapped.usage));
+        await writer.finish(frames);
+        const finishReason = mapped.choices[0].finish_reason;
+        const outcome = finishReason === "length" ? "incomplete" : finishReason === "content_filter" ? "content_filter" : mapped.bridge_warnings?.includes("suppressed_invalid_or_incomplete_tool_calls") ? "partial" : "completed";
+        return { outcome, finishReason, usage: mapped.usage, rawUsage: response.usage };
+      } else if (name === "error") throw upstreamSourceError(payload.error || payload);
+      else if (!CHAT_NOOP_EVENTS.has(name)) throw transportError("unsupported_sse_event", "Upstream SSE event is unsupported");
+    } catch (error) {
+      // Bound the diagnostic name only; never attach payload, text, or provider data.
+      throw withEventName(error, name, secrets);
+    }
   }
   throw transportError("missing_sse_terminal", "Upstream SSE ended before a terminal response event");
 }

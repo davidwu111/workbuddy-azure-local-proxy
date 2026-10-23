@@ -48,7 +48,7 @@ For PTU-M, do not test breakpoints or explicit no-cache policy as if supported. 
 
 ## Continuity acceptance is a separate future feature
 
-The current bridge is stateless Chat-history replay. It has no stored-response chain or opaque reasoning sidecar. Before any continuity implementation is enabled, establish a reliable authenticated client conversation ID **and branch/history identity** from actual wire evidence; extension round-tripping and timing are not proof of identity.
+The current bridge is stateless Chat-history replay. It has no stored-response chain or opaque reasoning sidecar. Stateful continuity is out of scope for this release by maintainer decision; this section is retained only as the design record that any future implementation must satisfy. Before any continuity implementation is enabled, establish a reliable authenticated client conversation ID **and branch/history identity** from actual wire evidence; extension round-tripping and timing are not proof of identity.
 
 A future design must scope state by authenticated principal, conversation, branch, Azure origin/deployment/variant/version/profile and tool contract; retain exact opaque reasoning/phase/compaction/output items; correlate call IDs; serialize updates or compare-and-swap each branch; deduplicate history and retries; bound total and per-conversation bytes/items/count and TTL; handle response-ID expiry, eviction, restart, cancellation, model/profile changes and missing state safely. Log no opaque state. Define at-rest protection/deletion if state persists. Stored chaining requires deliberate storage consent and provider deletion/retention handling; opaque replay can use `store:false` but still sends inference to Azure.
 
@@ -72,3 +72,22 @@ Observed result, exceptions, unresolved gaps:
 ```
 
 See [compatibility](<compatibility.md>) for the implemented contract and [review disposition](<review-disposition.md>) for offline coverage versus deferred work.
+
+## Live verification harness — Chat probe not run, native capture run once
+
+The guarded Chat probe has not been run. The single-probe procedure, approval fields, environment variables, exact step order, rollback and sanitized evidence skeleton are documented in [live verification](<live-verification.md>). The harness refuses without every approval guard and was only checked on its refusal path; this acceptance plan does not authorize spending, an Azure call, or a service restart. `capture-native.cjs` exists for the native route; it was run once under the approval recorded in the next section, and its six shape results are listed there.
+
+## Native capture run — 2026-10-23
+
+An authorised native capture run was made once on 2026-10-23 under approval reference `approved-yefan`. It reached Azure only through the local bridge; the approved route was alias and deployment `gpt-6-luna`, variant `gpt-6-luna`, declared version `2026-09-22`, deployment type PAYG. Each of the six sanitized captures in `test-fixtures/azure-responses/captured/` records that same approval reference.
+
+| Shape | Status | Observation |
+|---|---|---|
+| `flat-error` | `inconclusive` | `HTTP 400` with a flat `unsupported_parameter` body on `include`; no SSE `error` event was produced for the pre-flight validation failure, so the flat SSE error event remains unobserved. |
+| `reasoning-nullable-summary` | `inconclusive` | No reasoning item appeared in the stream for a one-word answer, and an item-level null summary was never observed. |
+| `annotations-null` | `inconclusive` | Only `annotations: []` and `logprobs: []` were observed; an explicit `null` was not. |
+| `image-streaming` | `fail` | `HTTP 400`: `imagegen deployment must be provided through header: x-ms-oai-image-generation-deployment`. The header is now configurable per alias (`nativeHeaders`) but was not configured for this run, so the shape is still outstanding. |
+| `output-boundary` | `pass` | `max_output_tokens:128000` was accepted with `HTTP 200` and usage `input_tokens 13`, `output_tokens 18`, `reasoning_tokens 11`. |
+| `multi-call` | `pass` | After `name` was made optional on `response.function_call_arguments.done`, the same request produced 11 events and two function calls (`probe_a`, `probe_b`) with terminal status `completed`. |
+
+This run does not constitute general Azure acceptance. It does not cover quota, latency, cache savings or price, and the rows in the proposed real-check matrix above remain unchanged.

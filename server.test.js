@@ -48,6 +48,16 @@ test("factory is explicit, defaults to loopback, health/readiness identify build
   assert.throws(() => createBridgeServer({ azureBase: "http://127.0.0.1" }), /test seam|HTTPS|origin/);
 });
 
+test("server request deadline covers admission wait plus upload for default and custom budgets", { timeout: 5000 }, () => {
+  const raw = timeouts => ({ azureBase: "https://example.invalid", approvedOrigins: ["https://example.invalid"], azureApiKey: UPSTREAM_KEY, proxyToken: LOCAL_TOKEN,
+    defaultModel: "local", models: { local: { deployment: "fixture-deployment", variant: "gpt-6-luna", version: "fixture-version" } }, ...(timeouts ? { timeouts } : {}) });
+  // Defaults: capacityWaitMs 30000 + uploadMs 30000.
+  assert.equal(createBridgeServer(raw()).requestTimeout, 60000);
+  const custom = createBridgeServer(raw({ capacityWaitMs: 5000, uploadMs: 2000 }));
+  assert.equal(custom.requestTimeout, 7000);
+  assert.equal(custom.headersTimeout, 2000); assert.equal(custom.keepAliveTimeout, 5000);
+});
+
 test("auth, unknown aliases, unsupported controls, invalid MIME/JSON and budgets never forward", { timeout: 5000 }, async t => {
   let calls = 0; const f = await fixture(t, () => { calls++; return json(completed()); });
   for (const [value, options, status] of [[body(), { headers: { Authorization: "Bearer wrong" } }, 401], [body({ model: "unknown" }), {}, 400], [body({ n: 2 }), {}, 400], [body({ max_tokens: 0 }), {}, 400], [body(), { headers: { "Content-Type": "text/plain" } }, 415], [body(), { raw: "{" }, 400]]) {
@@ -222,6 +232,18 @@ test("safe retry/correlation headers and errors preserve advice but never known 
   const malicious = await f.post(); await malicious.text();
   assert.equal(malicious.headers.get("apim-request-id"), null); assert.equal(malicious.headers.get("request-id"), null);
   assert.equal(JSON.stringify(f.logs).includes(UPSTREAM_KEY), false); assert.equal(JSON.stringify(f.logs).includes(LOCAL_TOKEN), false);
+});
+
+test("retry advice is copied only on error responses while correlation ids survive success", { timeout: 5000 }, async t => {
+  let responder = () => json(completed(), { headers: { "retry-after": "5", "retry-after-ms": "10", "x-ms-retry-after-ms": "10", "apim-request-id": "safe-request" } });
+  const f = await fixture(t, () => responder());
+  const ok = await f.post(); await ok.text();
+  assert.equal(ok.status, 200);
+  for (const name of ["retry-after", "retry-after-ms", "x-ms-retry-after-ms"]) assert.equal(ok.headers.get(name), null);
+  assert.equal(ok.headers.get("apim-request-id"), "safe-request");
+  responder = () => json({ error: { message: "rate limited", code: "rate_limited" } }, { status: 429, headers: { "retry-after": "5", "retry-after-ms": "10", "x-ms-retry-after-ms": "10" } });
+  const limited = await f.post(); await limited.text();
+  assert.equal(limited.status, 429); assert.equal(limited.headers.get("retry-after"), "5"); assert.equal(limited.headers.get("retry-after-ms"), "10"); assert.equal(limited.headers.get("x-ms-retry-after-ms"), "10");
 });
 
 test("rejected upstream MIME/status bodies are explicitly cancelled even when injection ignores abort", { timeout: 5000 }, async t => {
@@ -476,6 +498,68 @@ test("annotation-added events preserve terminal sanitized citations without warn
   const text = event("response.output_text.delta", { delta: "hello" }) + event("response.output_text.annotation.added", { output_index: 0, content_index: 0, annotation_index: 0, annotation }) + event("response.completed", { response: completed({ output }) });
   const f = await fixture(t, () => stream(text)); const raw = await (await f.post(body({ stream: true }))).text(); const chunks = parsedFrames(raw);
   assert.equal(chunks.some(value => value.error), false); assert.deepEqual(chunks.at(-1).choices[0].delta.annotations, [annotation]); assert.equal(chunks.flatMap(value => value.choices || []).map(value => value.delta?.content || "").join(""), "hello"); assert.equal(frames(raw).filter(value => value === "[DONE]").length, 1);
+});
+
+test("queued is a tolerated lifecycle notification before created and never terminates a stream by itself", { timeout: 5000 }, async t => {
+  let current; const f = await fixture(t, () => stream(current));
+  current = event("response.queued", { response: { id: "resp_queued", created_at: 99 } }) + event("response.created", { response: { id: "resp_queued", created_at: 99 } }) + event("response.output_text.delta", { delta: "hello" }) + event("response.completed", { response: completed({ id: "resp_queued", created_at: 99 }) });
+  const response = await f.post(body({ stream: true })); const raw = await response.text(); const chunks = parsedFrames(raw);
+  assert.equal(response.status, 200); assert.equal(chunks.some(value => value.error), false);
+  assert.equal(chunks.flatMap(value => value.choices || []).map(value => value.delta?.content || "").join(""), "hello");
+  assert.equal(chunks.every(value => value.id === "chatcmpl-resp_queued"), true); assert.equal(chunks.every(value => value.created === 99), true);
+  assert.equal(chunks.filter(value => value.choices?.[0]?.delta?.role === "assistant").length, 1);
+  assert.equal(frames(raw).filter(value => value === "[DONE]").length, 1);
+  current = event("response.queued", { response: { id: "resp_queued", created_at: 99 } });
+  const incomplete = await (await f.post(body({ stream: true }))).text(); const incompleteChunks = parsedFrames(incomplete);
+  assert.ok(incompleteChunks.some(value => value.error)); assert.equal(incompleteChunks.some(value => value.choices?.[0]?.finish_reason === "stop"), false);
+  assert.equal(frames(incomplete).filter(value => value === "[DONE]").length, 1);
+  current = event("response.queued", { response: "not-an-object" }) + event("response.completed", { response: completed() });
+  const malformed = await (await f.post(body({ stream: true }))).text();
+  assert.ok(parsedFrames(malformed).some(value => value.error));
+});
+
+test("raw reasoning events are accepted, discarded, unlogged and cannot alter reasoning_content", { timeout: 5000 }, async t => {
+  const raw = "RAW_REASONING_PRIVATE_MARKER";
+  const output = [{ type: "message", content: [{ type: "output_text", text: "hello" }] }, { type: "reasoning", summary: [{ type: "summary_text", text: "public summary" }] }];
+  const text = event("response.created", { response: { id: "resp_fixture", created_at: 123 } }) + event("response.reasoning_text.delta", { delta: raw }) + event("response.reasoning_text.done", { text: raw }) + event("response.reasoning_summary_text.delta", { delta: "public summary" }) + event("response.completed", { response: completed({ output }) });
+  const f = await fixture(t, () => stream(text));
+  const rawResponse = await (await f.post(body({ stream: true }))).text(); const chunks = parsedFrames(rawResponse); const choices = chunks.flatMap(value => value.choices || []);
+  assert.equal(chunks.some(value => value.error), false); assert.equal(rawResponse.includes(raw), false); assert.equal(JSON.stringify(chunks).includes(raw), false);
+  assert.equal(choices.map(value => value.delta?.content || "").join(""), "hello");
+  assert.equal(choices.map(value => value.delta?.reasoning_content || "").join(""), "public summary");
+  assert.equal(JSON.stringify(f.logs).includes(raw), false);
+  assert.equal(frames(rawResponse).filter(value => value === "[DONE]").length, 1);
+});
+
+test("malformed raw reasoning events still fail visibly", { timeout: 5000 }, async t => {
+  let current; const f = await fixture(t, () => stream(current));
+  for (current of [event("response.reasoning_text.delta", { delta: 42 }), event("response.reasoning_text.done", { text: { nested: "marker" } })]) {
+    const raw = await (await f.post(body({ stream: true }))).text(); const chunks = parsedFrames(raw);
+    assert.ok(chunks.some(value => value.error)); assert.equal(chunks.some(value => value.choices?.[0]?.finish_reason === "stop"), false);
+    assert.equal(frames(raw).filter(value => value === "[DONE]").length, 1);
+  }
+});
+
+test("unknown events still fail and expose only a sanitized event name in the request log", { timeout: 5000 }, async t => {
+  const f = await fixture(t, () => stream(event("response.sunshine.delta", { delta: "opaque material" })));
+  const raw = await (await f.post(body({ stream: true }))).text(); const error = parsedFrames(raw).find(value => value.error);
+  assert.ok(error); assert.deepEqual(Object.keys(error.error).sort(), ["code", "message", "type"]);
+  const record = f.logs.at(-1);
+  assert.equal(record.eventName, "response.sunshine.delta"); assert.equal(record.outcome, "stream_error");
+  assert.equal(JSON.stringify(record).includes("opaque material"), false);
+});
+
+test("secret-bearing and oversized event names are never logged verbatim", { timeout: 5000 }, async t => {
+  let current; const f = await fixture(t, () => stream(current));
+  const oversized = "response." + "x".repeat(130);
+  for (current of [event(`response.${UPSTREAM_KEY}`, {}), event(oversized, {})]) {
+    const raw = await (await f.post(body({ stream: true }))).text();
+    assert.ok(parsedFrames(raw).some(value => value.error));
+    const record = f.logs.at(-1);
+    assert.equal(Object.hasOwn(record, "eventName"), false);
+    assert.equal(JSON.stringify(record).includes(UPSTREAM_KEY), false);
+    assert.equal(JSON.stringify(record).includes("xxxxx"), false);
+  }
 });
 
 module.exports = { fixture, event, stream, json, completed, functionCall, functionTools, body, frames, parsedFrames, toolFrames };

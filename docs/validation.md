@@ -2,6 +2,30 @@
 
 This record describes **local synthetic validation**, not Azure or WorkBuddy acceptance. Official public documentation was fetched without authentication; no inference/API deployment calls, real credentials, WorkBuddy invocation, real tool execution or scheduled-task installation were used. The [real acceptance plan](<acceptance.md>) remains separately approval-gated and **NOT RUN**.
 
+## Native Responses review baseline (2026-10-23)
+
+After the native Responses update (`adapter-v2.11-native-create`), the complete
+offline suite was run on this Windows host with the default test runner from the
+repository root (`C:/Users/yefan/azure-bridge`), `node --test *.test.js`. Earlier
+entries below used the [in-process runner](<../run-offline-tests.cjs>) instead; the
+two results are not directly comparable in count.
+
+| Runtime / command | Tests | Pass | Fail / cancelled / skipped | Approximate duration |
+|---|---:|---:|---:|---:|
+| Node **v24.14.0**, `node --test *.test.js` | 343 | 339 | 0 / 0 / 4 | 8.5 s |
+| Node **v22.22.2**, `node --test *.test.js` | 343 | 339 | 0 / 0 / 4 | 8.3 s |
+| Node **v24.14.0**, after the Phase 1-2 fixes | 358 | 354 | 0 / 0 / 4 | 8.4 s |
+| Node **v22.22.2**, after the Phase 1-2 fixes | 358 | 354 | 0 / 0 / 4 | 8.6 s |
+| Node **v24.14.0**, after the Phase 3A fixes | 370 | 366 | 0 / 0 / 4 | 8.5 s |
+| Node **v22.22.2**, after the Phase 3A fixes | 370 | 366 | 0 / 0 / 4 | 8.7 s |
+| Node **v24.14.0**, after the Phase 4 harness | 379 | 369 | 0 / 0 / 10 | 8.6 s |
+| Node **v24.14.0**, after the Phase 4 run and routing headers | 383 | 379 | 0 / 0 / 4 | 8.7 s |
+
+The four skips are the Linux-only cases in
+[bridge.linux.test.js](<../bridge.linux.test.js>), so these Windows runs do not
+establish Linux or systemd execution, and no Azure, credential or installed-client
+acceptance is claimed.
+
 ## Linux branch integration (`adapter-v2.10-linux`)
 
 Integrated main tip `3a27007` into Linux tip `b52c775` (merge base `955b811`) on

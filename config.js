@@ -6,9 +6,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { isIP } = require("node:net");
-const { WORKBUDDY_MESSAGE_FIELDS, validateClientMetadataFieldName } = require("./chat-contract");
+const { WORKBUDDY_MESSAGE_FIELDS, CLIENT_METADATA_MODES, validateClientMetadataFieldName } = require("./chat-contract");
+const { normalizeNativePolicies } = require("./native-permissions");
 const VARIANTS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
 const EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
+// The bridge drops all client headers; only these operator-configured routing headers are ever forwarded.
+const ROUTING_HEADERS = Object.freeze(["x-ms-oai-image-generation-deployment"]);
 const LIMIT_DEFAULTS = Object.freeze({ requestBytes: 8 * 1024 ** 2, jsonBytes: 32 * 1024 ** 2,
   errorBytes: 64 * 1024, sseLineBytes: 16 * 1024 ** 2, sseEventBytes: 16 * 1024 ** 2,
   sseBufferBytes: 16 * 1024 ** 2, responseBytes: 64 * 1024 ** 2, maxConcurrent: 16, maxQueue: 32 });
@@ -29,6 +32,18 @@ function enumValue(value, choices, param) { if (!choices.includes(value)) fail(p
 function list(value, choices, param) {
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(x => !choices.includes(x))) fail(param, "must be a unique array of supported values");
   return [...value];
+}
+function routingHeaders(value, param) {
+  if (value === undefined) return Object.freeze({});
+  object(value, param);
+  const out = {};
+  for (const [name, entry] of Object.entries(value)) {
+    const key = name.toLowerCase();
+    if (!ROUTING_HEADERS.includes(key)) fail(`${param}.${name}`, "unsupported routing header");
+    if (typeof entry !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry)) fail(`${param}.${name}`, "invalid routing header value");
+    out[key] = entry;
+  }
+  return Object.freeze(out);
 }
 function bool(value, param) { if (typeof value !== "boolean") fail(param, "must be a boolean"); return value; }
 function validateOrigin(value, param, allowHttpLocalhostForTests = false) {
@@ -92,19 +107,29 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   config.models = Object.create(null);
   for (const [alias, route] of entries) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(alias) || ["__proto__", "constructor", "prototype"].includes(alias)) fail("models", "invalid alias");
-    object(route, `models.${alias}`); keys(route, ["deployment", "variant", "version", "profile"], `models.${alias}`);
+    object(route, `models.${alias}`); keys(route, ["deployment", "variant", "version", "profile", "nativeHeaders"], `models.${alias}`);
     const variant = enumValue(route.variant, VARIANTS, `models.${alias}.variant`);
     const deployment = nonempty(route.deployment, `models.${alias}.deployment`, 128);
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(deployment)) fail(`models.${alias}.deployment`, "invalid deployment identifier");
     config.models[alias] = { deployment, variant, version: nonempty(route.version, `models.${alias}.version`, 128),
-      profile: capabilityProfile(variant, route.profile, `models.${alias}.profile`) };
+      profile: capabilityProfile(variant, route.profile, `models.${alias}.profile`), nativeHeaders: routingHeaders(route.nativeHeaders, `models.${alias}.nativeHeaders`) };
   }
   config.defaultModel = nonempty(raw.defaultModel, "defaultModel", 128);
   if (!Object.hasOwn(config.models, config.defaultModel)) fail("defaultModel", "must identify a permitted alias");
+  config.nativePolicies = normalizeNativePolicies(raw.nativePolicies ?? Object.create(null), Object.keys(config.models));
+  // Chat gates images on the route profile while native gates them on the policy grant; both must agree.
+  for (const alias of Object.keys(config.models)) {
+    if (config.nativePolicies[alias].features.includes("image-input") && config.models[alias].profile.images !== true) fail(`nativePolicies.${alias}.features`, "image-input requires profile.images=true for the same alias");
+    if (config.nativePolicies[alias].features.includes("image-generation") && !config.models[alias].nativeHeaders["x-ms-oai-image-generation-deployment"]) fail(`models.${alias}.nativeHeaders`, "image-generation requires x-ms-oai-image-generation-deployment");
+  }
   config.maxOutputTokens = positive(raw.maxOutputTokens ?? 128000, "maxOutputTokens", 128000);
+  // Clients that omit a budget inherit the ceiling unless the operator sets a separate default.
+  config.defaultMaxOutputTokens = positive(raw.defaultMaxOutputTokens ?? config.maxOutputTokens, "defaultMaxOutputTokens", 128000);
+  if (config.defaultMaxOutputTokens > config.maxOutputTokens) fail("defaultMaxOutputTokens", "must not exceed maxOutputTokens");
   config.instructionPolicy = enumValue(raw.instructionPolicy ?? "reject-mixed", ["preserve", "developer", "system", "reject-mixed"], "instructionPolicy");
   config.samplingPolicy = enumValue(raw.samplingPolicy ?? "reject", ["reject", "drop-defaults"], "samplingPolicy");
   config.allowStore = bool(raw.allowStore ?? false, "allowStore");
+  config.nativeResponses = bool(raw.nativeResponses ?? false, "nativeResponses");
   if (raw.clientMetadataFields !== undefined) {
     if (!Array.isArray(raw.clientMetadataFields) || raw.clientMetadataFields.length > 16) fail("clientMetadataFields", "must be an array of at most 16 field names");
     config.clientMetadataFields = [];
@@ -120,7 +145,7 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   // "strict" accepts only the listed message metadata. "auto" additionally
   // ignores any other non-standard message-level key after bounded validation;
   // reserved/standard message fields and unknown top-level fields still fail.
-  config.clientMetadataMode = enumValue(raw.clientMetadataMode ?? "auto", ["strict", "auto"], "clientMetadataMode");
+  config.clientMetadataMode = enumValue(raw.clientMetadataMode ?? "auto", CLIENT_METADATA_MODES, "clientMetadataMode");
   config.defaults = { store: false, ...object(raw.defaults ?? {}, "defaults") };
   keys(config.defaults, ["store", "reasoningEffort", "reasoningMode", "reasoningContext", "cacheKey", "cacheOptions"], "defaults");
   bool(config.defaults.store, "defaults.store");
@@ -150,9 +175,9 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   config.logRetentionDays = positive(raw.logRetentionDays ?? 7, "logRetentionDays", 3650);
   // Never hash credential material into publicly visible identity.
   config.configId = crypto.createHash("sha256").update(JSON.stringify({ host: config.host, port: config.port, tls: Boolean(config.tlsCert), models: config.models, defaultModel: config.defaultModel,
-    azureBase: config.azureBase, maxOutputTokens: config.maxOutputTokens, instructionPolicy: config.instructionPolicy,
-    samplingPolicy: config.samplingPolicy, allowStore: config.allowStore, defaults: config.defaults,
-    clientMetadataFields: config.clientMetadataFields, clientMetadataMode: config.clientMetadataMode,
+    azureBase: config.azureBase, maxOutputTokens: config.maxOutputTokens, defaultMaxOutputTokens: config.defaultMaxOutputTokens, instructionPolicy: config.instructionPolicy,
+    samplingPolicy: config.samplingPolicy, allowStore: config.allowStore, nativeResponses: config.nativeResponses, defaults: config.defaults,
+    clientMetadataFields: config.clientMetadataFields, clientMetadataMode: config.clientMetadataMode, nativePolicies: config.nativePolicies,
     limits: config.limits, timeouts: config.timeouts })).digest("hex").slice(0, 16);
   return config;
 }
@@ -192,8 +217,10 @@ function loadConfig({ env = process.env, envFile, allowHttpLocalhostForTests = f
     azureBase: merged.AZURE_OPENAI_BASE, approvedOrigins: jsonEnv(merged, "BRIDGE_APPROVED_ORIGINS", []),
     azureApiKey: merged.AZURE_OPENAI_API_KEY, proxyToken: merged.BRIDGE_PROXY_TOKEN, models, defaultModel,
     maxOutputTokens: integerEnv(merged, "BRIDGE_MAX_OUTPUT_TOKENS", 128000),
+    defaultMaxOutputTokens: integerEnv(merged, "BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS", undefined),
     instructionPolicy: merged.BRIDGE_INSTRUCTION_POLICY ?? "reject-mixed", samplingPolicy: merged.BRIDGE_SAMPLING_POLICY ?? "reject",
-    allowStore: booleanEnv(merged, "BRIDGE_ALLOW_STORE", false), defaults,
+    allowStore: booleanEnv(merged, "BRIDGE_ALLOW_STORE", false), nativeResponses: booleanEnv(merged, "BRIDGE_NATIVE_RESPONSES", false), defaults,
+     nativePolicies: jsonEnv(merged, "BRIDGE_NATIVE_POLICIES", {}),
     clientMetadataFields: jsonEnv(merged, "BRIDGE_CLIENT_METADATA_FIELDS", undefined),
     clientMetadataMode: merged.BRIDGE_CLIENT_METADATA_MODE ?? "auto",
     limits: jsonEnv(merged, "BRIDGE_LIMITS", {}), timeouts: jsonEnv(merged, "BRIDGE_TIMEOUTS", {}),

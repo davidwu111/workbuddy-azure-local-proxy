@@ -1,0 +1,29 @@
+{
+  "shape": "image-streaming",
+  "capturedAt": "2026-10-23T05:57:36.643Z",
+  "approval": "approved-yefan",
+  "endpoint": "/v1/responses",
+  "status": 400,
+  "contentType": "application/json; charset=utf-8",
+  "request": {
+    "input": "Draw a single red square.",
+    "stream": true,
+    "max_output_tokens": 2048,
+    "tools": [
+      {
+        "type": "image_generation",
+        "model": "gpt-image-1"
+      }
+    ]
+  },
+  "events": [],
+  "response": {
+    "error": {
+      "message": "imagegen deployment must be provided through header: x-ms-oai-image-generation-deployment",
+      "type": "image_generation_user_error",
+      "code": "invalid_request_error",
+      "param": "tools"
+    }
+  },
+  "notes": "provider error shape"
+}

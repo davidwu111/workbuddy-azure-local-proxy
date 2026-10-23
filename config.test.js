@@ -32,6 +32,19 @@ test("invalid ports, budgets, limit/timeouts and JSON fail before listening", ()
   assert.throws(() => loadConfig({ env: env({ BRIDGE_MODELS: "{" }) }), /BRIDGE_MODELS/);
   assert.throws(() => loadConfig({ env: env({ BRIDGE_ALLOW_STORE: "yes" }) }), /BRIDGE_ALLOW_STORE/);
 });
+test("default output budget inherits the ceiling but stays independently configurable", () => {
+  assert.equal(validateConfig(raw()).defaultMaxOutputTokens, 128000);
+  assert.equal(loadConfig({ env: env() }).defaultMaxOutputTokens, 128000);
+  assert.equal(validateConfig(raw({ maxOutputTokens: 64000 })).defaultMaxOutputTokens, 64000);
+  assert.equal(loadConfig({ env: env({ BRIDGE_MAX_OUTPUT_TOKENS: "64000" }) }).defaultMaxOutputTokens, 64000);
+  assert.equal(validateConfig(raw({ maxOutputTokens: 64000, defaultMaxOutputTokens: 4096 })).defaultMaxOutputTokens, 4096);
+  assert.equal(loadConfig({ env: env({ BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS: "4096" }) }).defaultMaxOutputTokens, 4096);
+  assert.throws(() => validateConfig(raw({ maxOutputTokens: 1000, defaultMaxOutputTokens: 1001 })), { code: "INVALID_CONFIG", param: "defaultMaxOutputTokens" });
+  assert.throws(() => loadConfig({ env: env({ BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS: "128001" }) }), { code: "INVALID_CONFIG", param: "defaultMaxOutputTokens" });
+  for (const value of ["0", "-1", "1.5", "4096oops", ""]) assert.throws(() => loadConfig({ env: env({ BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS: value }) }), { code: "INVALID_CONFIG" });
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ defaultMaxOutputTokens: 4096 })).configId);
+  assert.equal(validateConfig(raw()).configId, validateConfig(raw({ defaultMaxOutputTokens: 128000 })).configId);
+});
 test("Node dotenv grammar and explicit environment precedence are shared", async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-config-test-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
@@ -88,7 +101,38 @@ test("storage cache defaults and diagnostic identity are safe and deliberate", (
   assert.throws(() => validateConfig(raw({ models: { local: { deployment: "d", variant: "gpt-6-luna", version: "v", profile: { deploymentType: "ptu-m" } } },
     defaults: { cacheOptions: { mode: "explicit" } } })), /PTU-M/);
   assert.equal(validateConfig(raw()).configId, validateConfig(raw({ azureApiKey: "different-upstream", proxyToken: "different-local" })).configId);
+  assert.equal(validateConfig(raw()).nativeResponses, false);
+  assert.equal(loadConfig({ env: env({ BRIDGE_NATIVE_RESPONSES: "true" }) }).nativeResponses, true);
+  assert.equal(loadConfig({ env: env({ BRIDGE_NATIVE_RESPONSES: "false" }) }).nativeResponses, false);
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ nativeResponses: true })).configId);
+  assert.equal(validateConfig(raw()).nativePolicies.local.allowStore, false);
+  const policy = { local: { features: ["web-search"] } };
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ nativePolicies: policy })).configId);
+  assert.equal(validateConfig(raw({ nativePolicies: policy })).configId, validateConfig(raw({ nativePolicies: policy })).configId);
+  assert.throws(() => validateConfig(raw({ nativePolicies: { unknown: {} } })), /nativePolicies/);
+  assert.throws(() => loadConfig({ env: env({ BRIDGE_NATIVE_POLICIES: "{" }) }), /BRIDGE_NATIVE_POLICIES/);
+  assert.deepEqual(loadConfig({ env: env({ BRIDGE_NATIVE_POLICIES: '{"local":{"features":["web-search"]}}' }) }).nativePolicies.local.features, ["web-search"]);
+  assert.throws(() => loadConfig({ env: env({ BRIDGE_NATIVE_RESPONSES: "yes" }) }), /BRIDGE_NATIVE_RESPONSES/);
   assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ samplingPolicy: "drop-defaults" })).configId);
+});
+test("native image input requires the same alias to enable Chat image capability", () => {
+  const grant = { nativePolicies: { local: { features: ["image-input"] } } };
+  assert.throws(() => validateConfig(raw(grant)), { code: "INVALID_CONFIG", param: "nativePolicies.local.features" });
+  const images = { deployment: "arbitrary-deployment", variant: "gpt-6-luna", version: "fixture-version", profile: { images: true } };
+  assert.deepEqual(validateConfig(raw({ ...grant, models: { local: images } })).nativePolicies.local.features, ["image-input"]);
+});
+test("native routing headers are allowlisted, normalized and required for image generation", () => {
+  const header = "x-ms-oai-image-generation-deployment";
+  const model = nativeHeaders => ({ deployment: "arbitrary-deployment", variant: "gpt-6-luna", version: "fixture-version", nativeHeaders });
+  assert.equal(validateConfig(raw({ models: { local: model({ [header]: "img-deploy" }) } })).models.local.nativeHeaders[header], "img-deploy");
+  assert.deepEqual(Object.keys(validateConfig(raw({ models: { local: model({ "X-MS-OAI-Image-Generation-Deployment": "img-deploy" }) } })).models.local.nativeHeaders), [header]);
+  assert.deepEqual(validateConfig(raw()).models.local.nativeHeaders, {});
+  for (const name of ["x-ms-custom", "x-ms-oai-image-generation-deployment-extra"]) assert.throws(() => validateConfig(raw({ models: { local: model({ [name]: "value" }) } })), { code: "INVALID_CONFIG", param: `models.local.nativeHeaders.${name}` }, name);
+  for (const value of ["", "-leading", "with space", "a".repeat(129), 7]) assert.throws(() => validateConfig(raw({ models: { local: model({ [header]: value }) } })), { code: "INVALID_CONFIG", param: `models.local.nativeHeaders.${header}` }, JSON.stringify(value));
+  const grant = { features: ["image-generation"], imageModels: ["gpt-image-1"] };
+  assert.throws(() => validateConfig(raw({ nativePolicies: { local: grant } })), { code: "INVALID_CONFIG", param: "models.local.nativeHeaders" });
+  assert.deepEqual(validateConfig(raw({ nativePolicies: { local: grant }, models: { local: model({ [header]: "img-deploy" }) } })).nativePolicies.local.features, ["image-generation"]);
+  assert.notEqual(validateConfig(raw({ models: { local: model({ [header]: "img-a" }) } })).configId, validateConfig(raw({ models: { local: model({ [header]: "img-b" }) } })).configId);
 });
 test("localhost HTTP requires an explicit isolated seam", () => {
   const mock = raw({ azureBase: "http://127.0.0.1:1234", approvedOrigins: ["http://127.0.0.1:1234"] });
