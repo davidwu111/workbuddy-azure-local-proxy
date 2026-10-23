@@ -8,12 +8,54 @@ The harness sends bounded Chat Completions requests to the bridge's **local** `P
 
 A successful run can show only that one approved alias answered one bounded Chat request through the local bridge. It does **not** establish:
 
-- native `POST /v1/responses` behavior or transport preservation;
+- native transport: only an authorized run of the `capture-native.cjs` capture harness can speak to `POST /v1/responses` behavior or transport preservation, and no such run has occurred;
 - tool, MCP, audio, code-interpreter, file-search, web-search or image behavior;
 - Azure deployment/version/region support, quota, cache behavior, latency or price;
 - Linux, installed-client or production-listener behavior.
 
 The 53-event Chat acceptance matrix is an offline test, not live evidence.
+
+## Native route capture (added, not run)
+
+The `capture-native.cjs` harness exists at the repository root and has **not** been run against Azure. Only its refusal path and its `--dry-run` path were exercised; no capture file exists. It posts exactly one request to the local bridge's `POST /v1/responses` at `BRIDGE_LIVE_BASE_URL`; it never contacts Azure directly and never reads `.env`.
+
+Each `--shape` value asks for one deliberately minimal exchange:
+
+- `flat-error` — provokes a provider rejection so the real flat error payload is recorded.
+- `reasoning-nullable-summary` — observes whether reasoning items carry `summary: null`.
+- `annotations-null` — observes whether `output_text` parts carry `annotations: null`.
+- `image-streaming` — exercises image generation with `stream: true`.
+- `output-boundary` — sends `max_output_tokens` at the configured cap.
+- `multi-call` — asks for two function calls.
+
+The guards below are all enforced before any socket is opened; any failure prints one bounded line and exits `2`:
+
+| Guard | Requirement |
+|---|---|
+| `--shape` | One of `flat-error`, `reasoning-nullable-summary`, `annotations-null`, `image-streaming`, `output-boundary`, `multi-call`. |
+| `BRIDGE_LIVE_APPROVAL` | Non-secret reference, 1-128 printable ASCII characters; rejected if it looks like `sk-`, `Bearer`, a JWT or a 32+ hex secret. |
+| `BRIDGE_LIVE_BASE_URL` | Absolute `http(s)` URL with no credentials, query or fragment; a non-loopback host also requires `BRIDGE_LIVE_ALLOW_REMOTE=1`. |
+| `BRIDGE_LIVE_TOKEN` | Bearer token for the local bridge. |
+| `BRIDGE_LIVE_TIMEOUT_MS` | Optional integer 1000-120000 ms; default 30000. |
+
+Optional shape inputs are `BRIDGE_LIVE_ALIAS`, `BRIDGE_LIVE_IMAGE_MODEL` and `BRIDGE_LIVE_MAX_OUTPUT_TOKENS` (integer 1-1000000).
+
+Placeholder-only invocations (a dry run opens no socket):
+
+```text
+BRIDGE_LIVE_APPROVAL=<approval-reference> BRIDGE_LIVE_BASE_URL=http://127.0.0.1:8787 BRIDGE_LIVE_TOKEN=<proxy-token> node capture-native.cjs --shape flat-error --dry-run
+BRIDGE_LIVE_APPROVAL=<approval-reference> BRIDGE_LIVE_BASE_URL=http://127.0.0.1:8787 BRIDGE_LIVE_TOKEN=<proxy-token> node capture-native.cjs --shape flat-error
+```
+
+`--dry-run` prints the exact request body and exits `0` without opening a socket; the second line is only the shape a real run would take. There are no retries, redirects are refused (`redirect: "error"`), and a body larger than 8 MiB or an SSE line larger than 200000 bytes exits `3`.
+
+A run writes `test-fixtures/azure-responses/captured/<shape>.json` as UTF-8 with mode `0600`, using the schema `{shape, capturedAt, approval, endpoint, status, contentType, request, events, response, notes}`, where `events` holds the parsed SSE payloads in order and `response` holds the JSON response or the terminal event's `response`.
+
+Evidence never includes request or response headers. The token and the approval reference are replaced with `[redacted]` wherever they appear; `sk-` runs of 20 or more characters, header-shaped keys, and any `*_key`/`*_token` string longer than 16 characters are also redacted. If the token still appears in the serialized JSON, the capture is refused with exit `4`.
+
+`captured-fixtures.test.js` replays any capture that is present and skips a shape whose file is absent; it also scans captures for credential-shaped strings.
+
+A capture proves only that one deployment returned one shape once. It does not establish version support, quota, cache behaviour, price, or compatibility with any client.
 
 ## Approval fields
 

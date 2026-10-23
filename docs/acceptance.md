@@ -75,4 +75,4 @@ See [compatibility](<compatibility.md>) for the implemented contract and [review
 
 ## Live verification harness — not run
 
-No live check has been run. The guarded single-probe procedure, approval fields, environment variables, exact step order, rollback and sanitized evidence skeleton are documented in [live verification](<live-verification.md>). The harness refuses without every approval guard and was only checked on its refusal path; this acceptance plan does not authorize spending, an Azure call, or a service restart.
+No live check has been run. The guarded single-probe procedure, approval fields, environment variables, exact step order, rollback and sanitized evidence skeleton are documented in [live verification](<live-verification.md>). The harness refuses without every approval guard and was only checked on its refusal path; this acceptance plan does not authorize spending, an Azure call, or a service restart. `capture-native.cjs` exists for the native route, has likewise only been exercised on its refusal and dry-run paths, and its shape rows remain `not run`.

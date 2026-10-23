@@ -292,3 +292,15 @@ test("native JSON error redaction targets only known message text without mutati
   const secret = "fixture-secret-marker"; const p = parent([], { status: "failed", error: { message: `failure ${secret}` }, opaque: { data: secret } });
   const got = redactNativeResponse(p, [secret]); assert.equal(got.error.message, "failure [redacted]"); assert.equal(got.opaque.data, secret); assert.equal(p.error.message, `failure ${secret}`); assert.equal(got.model, "provider-model");
 });
+test("provider collections documented as nullable are accepted when explicit null", () => {
+  const nulls = policy();
+  assert.equal(inspect(nulls, "response.completed", { response: parent([{ type: "reasoning", id: "rs_1", summary: null }]) }), true);
+  assert.equal(inspect(nulls, "response.completed", { response: parent([{ type: "reasoning", id: "rs_1", summary: [], content: null }]) }), true);
+  assert.equal(inspect(nulls, "response.completed", { response: parent([{ type: "message", id: "m", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: null }] }]) }), true);
+  assert.equal(inspect(nulls, "response.completed", { response: parent([{ type: "message", id: "m", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: [], logprobs: null }] }]) }), true);
+  // A message body is not nullable: an assistant message must carry a content array.
+  assert.equal(inspect(nulls, "response.completed", { response: parent([{ type: "message", id: "m", role: "assistant", content: null }]) }), false);
+  // A non-null but wrong-typed collection is still rejected.
+  assert.equal(inspect(nulls, "response.completed", { response: parent([{ type: "message", id: "m", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: {} }] }]) }), false);
+  assert.equal(inspect(nulls, "response.completed", { response: parent([{ type: "reasoning", id: "rs_1", summary: "none" }]) }), false);
+});

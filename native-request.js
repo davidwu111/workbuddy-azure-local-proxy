@@ -490,8 +490,10 @@ function createNativeResponsePolicy(request) {
     if (!object(part)) return false;
     if (part.type === "output_text") {
       if (typeof part.text !== "string") return false;
-      if (own(part, "annotations") && (!Array.isArray(part.annotations) || part.annotations.length > maxListed || !part.annotations.every(citationAllowed))) return false;
-      if (own(part, "logprobs") && (!Array.isArray(part.logprobs) || part.logprobs.length > maxListed)) return false;
+      // The provider marks these collections nullable and some versions emit an explicit null.
+      // A null carries no identity or payload, so it is equivalent to omission here.
+      if (own(part, "annotations") && part.annotations !== null && (!Array.isArray(part.annotations) || part.annotations.length > maxListed || !part.annotations.every(citationAllowed))) return false;
+      if (own(part, "logprobs") && part.logprobs !== null && (!Array.isArray(part.logprobs) || part.logprobs.length > maxListed)) return false;
       return true;
     }
     if (part.type === "refusal") return typeof part.refusal === "string";
@@ -555,8 +557,9 @@ function createNativeResponsePolicy(request) {
   const itemAllowed = (item, index) => {
     if (!object(item) || own(item, "id") && !identifier(item.id)) return false;
     if (item.type === "message") return (!own(item, "role") || item.role === "assistant") && Array.isArray(item.content) && item.content.length <= p.maxItems && item.content.every(partAllowed);
-    if (item.type === "reasoning") return (!own(item, "summary") || Array.isArray(item.summary) && item.summary.length <= maxItems && item.summary.every(part => object(part) && part.type === "summary_text" && typeof part.text === "string"))
-      && (!own(item, "content") || Array.isArray(item.content) && item.content.length <= maxItems && item.content.every(part => object(part) && ["reasoning_text", "reasoning_summary"].includes(part.type) && (typeof part.text === "string" || part.type === "reasoning_summary")));
+    // `summary` and `content` are nullable on reasoning items; an explicit null is equivalent to omission.
+    if (item.type === "reasoning") return (!own(item, "summary") || item.summary === null || Array.isArray(item.summary) && item.summary.length <= maxItems && item.summary.every(part => object(part) && part.type === "summary_text" && typeof part.text === "string"))
+      && (!own(item, "content") || item.content === null || Array.isArray(item.content) && item.content.length <= maxItems && item.content.every(part => object(part) && ["reasoning_text", "reasoning_summary"].includes(part.type) && (typeof part.text === "string" || part.type === "reasoning_summary")));
     if (item.type === "compaction") return true; // opaque data, never interpreted or retained for chaining
     if (item.type === "function_call" || item.type === "custom_tool_call") return toolAllowedHere(item) && remember(item, index);
     if (HOSTED_TYPES.has(item.type)) return hostedAllowed(item, index);

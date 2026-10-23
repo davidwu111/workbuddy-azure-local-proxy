@@ -2,7 +2,7 @@
 
 A dependency-free Node.js adapter (loopback by default; opt-in LAN binding and native TLS): **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
 
-**Evidence boundary:** The integrated Linux/shared-core offline suite passed **366 of 370 tests (4 Linux-only skips, 0 failures)** on Windows with Node **24.14.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>). The [2026-10-23 review](<docs/review-2026-10-23.md>) records the current open findings and the phase plan.
+**Evidence boundary:** The integrated Linux/shared-core offline suite passed **369 of 379 tests (4 Linux-only skips, 6 capture skips, 0 failures)** on Windows with Node **24.14.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>). The [2026-10-23 review](<docs/review-2026-10-23.md>) records the current open findings and the phase plan.
 
 ## Requirements and migration
 
@@ -111,7 +111,9 @@ failure emits one bounded `bridge.error` event. Tool calls are validated against
 executed locally.
 
 See the [native request contract](<docs/native-responses-api.md>), [feature permissions](<docs/native-feature-permissions.md>),
-[SSE contract](<docs/native-sse-contract.md>) and [design record](<docs/responses-api-design.md>).
+[SSE contract](<docs/native-sse-contract.md>) and [design record](<docs/responses-api-design.md>). Live native behaviour has not been
+captured; an approval-gated harness (`capture-native.cjs`) can record sanitized captures for offline replay under the
+[live verification procedure](<docs/live-verification.md>).
 
 Configuration is validated before listening. `/healthz` reports liveness; `/readyz` reports local readiness, **not** that Azure credentials, quota, deployment availability, or WorkBuddy have been verified. Public config identity includes bind host/port and whether TLS is enabled, but deliberately excludes credentials, credential fingerprints and TLS key material. After changing credentials or TLS key/certificate files, explicitly stop/restart the running bridge; matching health identity does not prove credential/key equivalence. Port defaults to 8787; changing host, `BRIDGE_PORT` or TLS also requires updating the WorkBuddy URL. The Windows launcher is a local HTTP/loopback convenience and refuses LAN/TLS configuration; use direct Node for LAN/TLS.
 

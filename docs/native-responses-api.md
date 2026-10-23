@@ -81,6 +81,8 @@ The request-scoped output policy checks message blocks, every terminal output it
 
 All **29 specialized feature event types** remain transport schemas, not automatic permission. JSON/SSE output policy inspects nested and terminal output items and authorizes only request-declared tools/resources within operator-approved alias scope. Plain function tools need no grant. MCP calls are always-approval only; approval requests are forwarded as data and this bridge never implements auto-approval or secure approval continuation. Custom/function calls are relayed, never locally executed. Partial output is immediate and may be observed before the provider's terminal outcome. Grants are documented in [native feature permissions](<native-feature-permissions.md>).
 
+- Provider collections documented as nullable (`reasoning.summary`, `reasoning.content`, `output_text.annotations`, `output_text.logprobs`) are accepted as an explicit `null`, because a null is equivalent to omission there, while `message.content` must still be an array and a non-null wrong-typed collection is still rejected.
+
 ## HTTP and stream lifecycle
 
 The [server](<../server.js>) reuses bearer authentication, approved origin/routing, TLS, bounded uploads, concurrency/admission queues, idle/total/upload/stall timeouts, cancellation, shutdown, safe headers and no-retry behavior across Chat and native routes. Check native outbound request bytes again after routing/defaults. JSON/error/upstream/downstream/frame/identity budgets remain enforced, and configured downstream bytes override the isolated transport default.
