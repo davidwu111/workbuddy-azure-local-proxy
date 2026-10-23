@@ -143,6 +143,13 @@ test("flat and nested Azure errors, failed/incomplete and observed compatibility
   for (const p of values) { const r = run(frame(p)); assert.equal((await r.promise).outcome, p.type); assert.deepEqual(JSON.parse((await nativeRecords(r.res.frames.join("")))[0].data), p); }
   for (const p of [{ type: "error", error: null }, { type: "error", error: {} }, { ...payloadFor("response.completed"), response: { id: "r", status: "failed" } }]) assert.throws(() => validateNativeEvent(p.type, p), { code: "invalid_native_shape" });
 });
+test("minimal flat provider errors stay known and terminal while optional metadata keeps its kind", () => {
+  assert.deepEqual(validateNativeEvent("error", { type: "error", code: "busy", message: "m" }), { known: true, terminal: true, category: "error" });
+  assert.deepEqual(validateNativeEvent("error", { type: "error", code: "busy", message: "m", param: null, sequence_number: 4 }), { known: true, terminal: true, category: "error" });
+  for (const p of [{ type: "error", code: "busy" }, { type: "error", message: "m" }, { type: "error", code: "busy", message: "m", param: 7 }, { type: "error", code: "busy", message: "m", sequence_number: "4" }]) {
+    assert.throws(() => validateNativeEvent("error", p), { code: "invalid_native_shape" }, JSON.stringify(p));
+  }
+});
 test("created response uses real queued/in-progress statuses, never a fabricated created status", () => {
   for (const status of ["queued", "in_progress"]) assert.equal(validateNativeEvent("response.created", { ...payloadFor("response.created"), response: { id: "r", status } }).known, true);
   assert.throws(() => validateNativeEvent("response.created", { ...payloadFor("response.created"), response: { id: "r", status: "created" } }), { code: "invalid_native_shape" });

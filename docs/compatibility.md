@@ -62,6 +62,9 @@ Only forms that the official schema defines as *unset*, *disabled*, or non-meani
 | `null` for a standard nullable option (`stream`, `n`, budgets, `temperature`, `top_p`, `metadata`, `store`, `reasoning_effort`, `verbosity`, …) | Treated as unspecified; configured/declared defaults apply |
 | `frequency_penalty: 0`, `presence_penalty: 0` | Omitted (documented inert value) |
 | `logprobs: false` with no `top_logprobs` | Omitted (disabled) |
+| `logprobs: false` with `top_logprobs: 0` | Omitted (the documented disabled pair) |
+| `service_tier: "auto"` | Omitted (documented inert tier) |
+| `moderation: "auto"` | Omitted (documented inert value) |
 | `logit_bias: {}` | Omitted (no biases) |
 | `modalities: ["text"]` | Omitted (default text-only) |
 | `stop: []` | Omitted (no sequences) |
@@ -71,11 +74,11 @@ Only forms that the official schema defines as *unset*, *disabled*, or non-meani
 | Assistant content omitted with `tool_calls`/`refusal` | Accepted, matching the standard schema |
 | `strict: null` on tools / `json_schema` | Resolved to explicit target `strict:false` (Chat's nonstrict default) |
 
-`top_logprobs: 0` is **not** an unconditional no-op: the standard requires `logprobs:true` whenever it is used, and that still requests sampled-token probabilities. `prompt_cache_key: null` omits the key even when a bridge default is configured, so it cannot resurrect cache identity the caller cleared. `prompt_cache_retention` and `prompt_cache_options.ttl` express independent maximum/minimum policies and are never substituted for one another.
+`top_logprobs: 0` is **not** an unconditional no-op: the standard requires `logprobs:true` whenever it is used, so a lone `top_logprobs: 0` still fails. The exact pair `logprobs:false` + `top_logprobs:0` is the documented disabled default and is dropped. `prompt_cache_key: null` omits the key even when a bridge default is configured, so it cannot resurrect cache identity the caller cleared. `prompt_cache_retention` and `prompt_cache_options.ttl` express independent maximum/minimum policies and are never substituted for one another.
 
 ### Standard fields that are recognized but rejected
 
-These are valid Chat Completions semantics that this bridge does not implement faithfully, so they fail locally with `unsupported_parameter` instead of being silently ignored: `n>1`, nonempty `stop`, nonzero penalties, nonempty `logit_bias`, `logprobs:true`/`top_logprobs`, `seed`, `audio`, non-text `modalities`, `prediction`, `moderation`, `service_tier`, `prompt_cache_retention`, `web_search_options`, legacy `functions`/`function_call`, legacy `function` messages, custom tools and custom/allowed-tools `tool_choice`, non-root-object JSON schemas, image input when the profile disables it, and image `detail:"original"`.
+These are valid Chat Completions semantics that this bridge does not implement faithfully, so they fail locally with `unsupported_parameter` instead of being silently ignored: `n>1`, nonempty `stop`, nonzero penalties, nonempty `logit_bias`, `logprobs:true`/`top_logprobs`, `seed`, `audio`, non-text `modalities`, `prediction`, non-default `moderation`, non-default `service_tier`, `prompt_cache_retention`, `web_search_options`, legacy `functions`/`function_call`, legacy `function` messages, custom tools and custom/allowed-tools `tool_choice`, non-root-object JSON schemas, image input when the profile disables it, and image `detail:"original"`.
 
 ### Field table
 

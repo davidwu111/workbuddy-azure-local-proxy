@@ -33,11 +33,13 @@ const object = value => value !== null && typeof value === "object" && !Array.is
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 const identity = value => typeof value === "string" && value.length > 0;
 const coreItems = new Set(["message", "function_call", "reasoning", "compaction", "file_search_call", "web_search_call", "code_interpreter_call", "image_generation_call", "mcp_call", "mcp_list_tools", "mcp_approval_request", "custom_tool_call"]);
+// Minimal flat provider errors may omit these; their declared kinds still apply when present.
+const OPTIONAL_ERROR_FIELDS = Object.freeze({ param: "nullable-string", sequence_number: "integer" });
 
 function fieldsFor(name, category) {
-  const fields = { type: "string", sequence_number: "integer" };
+  const fields = name === "error" ? { type: "string" } : { type: "string", sequence_number: "integer" };
   if (own(statuses, name)) fields.response = "object";
-  else if (name === "error") { fields.code = "nullable-string"; fields.message = "string"; fields.param = "nullable-string"; }
+  else if (name === "error") { fields.code = "nullable-string"; fields.message = "string"; }
   else {
     const indexed = !["audio", "error", "lifecycle", "lifecycle-terminal", "lifecycle-queued"].includes(category);
     if (indexed) fields.output_index = "integer";
@@ -61,7 +63,9 @@ function fieldsFor(name, category) {
 }
 const registry = Object.create(null);
 for (const [category, names] of Object.entries(groups)) for (const name of names) {
-  registry[name] = Object.freeze({ name, category, featureGated: FEATURE_CATEGORIES.includes(category), fields: fieldsFor(name, category) });
+  const entry = { name, category, featureGated: FEATURE_CATEGORIES.includes(category), fields: fieldsFor(name, category) };
+  if (name === "error") entry.optionalFields = OPTIONAL_ERROR_FIELDS;
+  registry[name] = Object.freeze(entry);
 }
 const EVENT_REGISTRY = Object.freeze(registry);
 const COMPATIBILITY_EVENTS = Object.freeze(Object.assign(Object.create(null), {
@@ -88,7 +92,10 @@ function validateNativeEvent(name, payload) {
     if (own(payload.error, "code") && !matches(payload.error.code, "nullable-string")) throw invalid();
     if (own(payload.error, "type") && typeof payload.error.type !== "string") throw invalid();
     if (own(payload.error, "param") && !matches(payload.error.param, "nullable-string")) throw invalid();
-  } else for (const [field, kind] of Object.entries(entry.fields)) if (!own(payload, field) || !matches(payload[field], kind)) throw invalid();
+  } else {
+    for (const [field, kind] of Object.entries(entry.fields)) if (!own(payload, field) || !matches(payload[field], kind)) throw invalid();
+    for (const [field, kind] of Object.entries(entry.optionalFields ?? {})) if (own(payload, field) && !matches(payload[field], kind)) throw invalid();
+  }
   if (own(payload, "sequence_number") && !integer(payload.sequence_number)) throw invalid();
   if (own(statuses, name)) {
     const response = payload.response;

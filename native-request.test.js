@@ -23,8 +23,8 @@ test("native route selection, profile output cap and stateless defaults never in
   assert.throws(() => validateNativeRequest({ input: "x", max_output_tokens: 101 }, cfg), { code: "invalid_parameter" });
 });
 test("native booleans and nullable inert defaults are explicit and storage stays disabled", () => {
-  const r = validateNativeRequest({ input: [], stream: null, store: null, background: false, max_output_tokens: null, parallel_tool_calls: null }, config());
-  assert.equal(r.payload.stream, false); assert.equal(r.payload.store, false); assert.equal(r.payload.max_output_tokens, 128000); assert.equal(r.payload.parallel_tool_calls, null);
+  const r = validateNativeRequest({ input: "x", stream: null, store: null, background: false, max_output_tokens: null, parallel_tool_calls: null }, config());
+  assert.equal(r.payload.stream, false); assert.equal(r.payload.store, false); assert.equal(r.payload.max_output_tokens, 128000); assert.equal(Object.hasOwn(r.payload, "parallel_tool_calls"), false);
   for (const key of ["store", "background"]) assert.throws(() => validateNativeRequest({ input: "x", [key]: true }, config()), { code: "unsupported_parameter", param: key });
   const consent = config({ allowStore: true, nativePolicies: { local: { allowStore: true } }, defaults: { store: true } });
   assert.equal(validateNativeRequest({ input: "x" }, consent).payload.store, false);
@@ -32,6 +32,42 @@ test("native booleans and nullable inert defaults are explicit and storage stays
   assert.throws(() => validateNativeRequest({ input: "x", store: true }, config({ allowStore: true })), { code: "unsupported_parameter", param: "store" });
   assert.throws(() => validateNativeRequest({ input: "x", store: true }, config({ nativePolicies: { local: { allowStore: true } } })), { code: "unsupported_parameter", param: "store" });
   for (const key of ["stream", "store", "background", "parallel_tool_calls"]) assert.throws(() => validateNativeRequest({ input: "x", [key]: "false" }, config()), { code: "invalid_parameter" });
+});
+test("inert deferred defaults are accepted and dropped while every non-default value stays unsupported", () => {
+  const inert = { metadata: {}, include: [], truncation: "disabled", top_logprobs: 0, service_tier: "auto", temperature: 1, top_p: 1 };
+  const r = validateNativeRequest({ input: "x", ...inert }, config());
+  for (const key of Object.keys(inert)) assert.equal(Object.hasOwn(r.payload, key), false);
+  const rejected = [["metadata", []], ["metadata", { tenant: "a" }], ["include", {}], ["include", ["file_search_call.results"]], ["truncation", "auto"], ["top_logprobs", 1], ["service_tier", "flex"], ["temperature", 0.5], ["top_p", 0.9]];
+  for (const [key, value] of rejected) assert.throws(() => validateNativeRequest({ input: "x", [key]: value }, config()), { code: "unsupported_parameter", param: key }, `${key}=${JSON.stringify(value)}`);
+});
+test("nullable parallel_tool_calls and empty text are accepted but omitted from the payload", () => {
+  const bare = validateNativeRequest({ input: "x", parallel_tool_calls: null, text: {} }, config());
+  assert.equal(Object.hasOwn(bare.payload, "parallel_tool_calls"), false); assert.equal(Object.hasOwn(bare.payload, "text"), false);
+  const real = validateNativeRequest({ input: "x", parallel_tool_calls: false, text: { verbosity: "high" } }, config());
+  assert.equal(real.payload.parallel_tool_calls, false); assert.deepEqual(real.payload.text, { verbosity: "high" });
+});
+test("empty native input is rejected locally while whitespace stays content", () => {
+  assert.throws(() => validateNativeRequest({ input: [] }, config()), { code: "invalid_parameter", param: "input" });
+  assert.throws(() => validateNativeRequest({ input: "" }, config()), { code: "invalid_parameter", param: "input" });
+  assert.equal(validateNativeRequest({ input: " " }, config()).payload.input, " ");
+});
+test("native instruction policy rejects mixed roles and rewrites instruction roles without mutating input", () => {
+  const mixed = [{ role: "system", content: "a" }, { role: "developer", content: "b" }];
+  assert.throws(() => validateNativeRequest({ input: mixed }, config({ instructionPolicy: "reject-mixed" })), { code: "invalid_parameter", param: "input[1].role", message: "Mixed system/developer instructions are disabled by policy" });
+  assert.throws(() => validateNativeRequest({ input: [{ role: "user", content: "q" }, { role: "developer", content: "b" }, { role: "system", content: "a" }] }, config()), { code: "invalid_parameter", param: "input[2].role" });
+  assert.deepEqual(validateNativeRequest({ input: [{ role: "system", content: "a" }, { role: "system", content: "b" }] }, config()).payload.input.map(item => item.role), ["system", "system"]);
+  const input = [{ type: "message", id: "m", role: "system", status: "completed", content: "a" }, { role: "user", content: "b" }];
+  const developer = validateNativeRequest({ input }, config({ instructionPolicy: "developer" }));
+  assert.equal(developer.payload.input[0].role, "developer"); assert.equal(developer.payload.input[0].id, "m"); assert.equal(developer.payload.input[0].status, "completed"); assert.equal(developer.payload.input[0].content, "a"); assert.equal(developer.payload.input[1].role, "user");
+  assert.equal(input[0].role, "system");
+  assert.equal(validateNativeRequest({ input: [{ role: "developer", content: "a" }] }, config({ instructionPolicy: "system" })).payload.input[0].role, "system");
+  assert.deepEqual(validateNativeRequest({ input: mixed }, config({ instructionPolicy: "preserve" })).payload.input.map(item => item.role), ["system", "developer"]);
+});
+test("native default output budget comes from config while explicit values keep the ceiling", () => {
+  const cfg = config({ maxOutputTokens: 128000, defaultMaxOutputTokens: 4096 });
+  assert.equal(validateNativeRequest({ input: "x" }, cfg).payload.max_output_tokens, 4096);
+  assert.equal(validateNativeRequest({ input: "x", max_output_tokens: 8192 }, cfg).payload.max_output_tokens, 8192);
+  assert.throws(() => validateNativeRequest({ input: "x", max_output_tokens: 128001 }, cfg), { code: "invalid_parameter", param: "max_output_tokens" });
 });
 test("typed and shorthand native messages preserve refusal field, phases, IDs and order", () => {
   const input = [{ role: "user", content: [{ type: "input_text", text: "question" }] }, { type: "message", id: "m", role: "assistant", status: "completed", phase: "commentary", content: [{ type: "output_text", text: "thinking", annotations: [], logprobs: [] }, { type: "refusal", refusal: "cannot comply" }] }];

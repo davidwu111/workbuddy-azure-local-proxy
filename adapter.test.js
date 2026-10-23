@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { BridgeError, toResponsesRequest, extractResponse, terminalOutcome, mapUsage, ignoredClientFields } = require("./adapter");
+const { normalizeChatDefaults } = require("./chat-contract");
 
 // Synthetic objects only: no bridge entrypoint, environment files, listeners, or credentials.
 function configuration(overrides = {}) {
@@ -109,6 +110,17 @@ test("budget fields are individually validated, max_completion takes precedence,
   assert.equal(convert(request(), configuration({ profile: { maxOutputTokens: 1000 } })).max_output_tokens, 1000);
 });
 
+test("omitted output budget uses the configured default while explicit budgets keep the ceiling", () => {
+  const config = configuration({ maxOutputTokens: 128000, defaultMaxOutputTokens: 4096 });
+  assert.equal(convert(request(), config).max_output_tokens, 4096);
+  assert.equal(convert(request({ max_tokens: 8192 }), config).max_output_tokens, 8192);
+  assert.equal(convert(request({ max_completion_tokens: 8192 }), config).max_output_tokens, 8192);
+  rejected(request({ max_tokens: 128001 }), "max_tokens", config);
+  rejected(request({ max_completion_tokens: 128001 }), "max_completion_tokens", config);
+  // A default above the effective deployment cap never raises the ceiling.
+  assert.equal(convert(request(), configuration({ maxOutputTokens: 128000, defaultMaxOutputTokens: 4096, profile: { maxOutputTokens: 1000 } })).max_output_tokens, 1000);
+});
+
 test("WorkBuddy boolean boundary hints are ignored without changing message authority or request semantics", () => {
   const original = { messages: [
     { role: "system", content: "stable" }, { role: "developer", content: "instruction" },
@@ -163,6 +175,31 @@ test("standard nullable unset controls and disabled defaults retain a finite bri
   assert.equal(mapped.reasoning.effort, "high"); assert.equal(mapped.prompt_cache_key, undefined); assert.equal(mapped.store, false);
 });
 
+test("exact inert service, moderation and logprob defaults are dropped before conversion", () => {
+  const baseline = convert(request());
+  for (const [extras, normalized] of [
+    [{ service_tier: "auto" }, ["service_tier"]],
+    [{ moderation: "auto" }, ["moderation"]],
+    [{ logprobs: false, top_logprobs: 0 }, ["logprobs", "top_logprobs"]],
+  ]) {
+    const body = request(extras);
+    const payload = convert(body);
+    assert.deepEqual(payload, baseline);
+    const serialized = JSON.stringify(payload);
+    for (const field of normalized) assert.equal(serialized.includes(field), false);
+    assert.deepEqual(normalizeChatDefaults(body).normalizedFields, normalized);
+  }
+  // Non-default values keep exactly their existing error class and parameter.
+  assert.throws(() => convert(request({ service_tier: "priority" })), error => error.code === "unsupported_parameter" && error.param === "body.service_tier");
+  assert.throws(() => convert(request({ moderation: { mode: "strict" } })), error => error.code === "unsupported_parameter" && error.param === "body.moderation");
+  assert.throws(() => convert(request({ logprobs: true })), error => error.code === "unsupported_parameter" && error.param === "body.logprobs");
+  assert.throws(() => convert(request({ top_logprobs: 5 })), error => error.code === "invalid_parameter" && error.param === "top_logprobs");
+  assert.throws(() => convert(request({ logprobs: false, top_logprobs: 5 })), error => error.code === "invalid_parameter" && error.param === "top_logprobs");
+  // Sampling compatibility stays owned by BRIDGE_SAMPLING_POLICY, not normalization.
+  assert.throws(() => convert(request({ temperature: 1 })), error => error.code === "invalid_parameter" && error.param === "temperature");
+  assert.equal(normalizeChatDefaults({ temperature: 1, top_p: 1 }).body.temperature, 1);
+});
+
 test("nonnullable standard options and malformed defaults are not coerced into harmless values", () => {
   for (const field of ["tools", "tool_choice", "parallel_tool_calls", "prompt_cache_options", "response_format", "user", "web_search_options", "functions", "function_call"]) {
     assert.throws(() => convert(request({ [field]: null })), error => error.code === "invalid_parameter" && error.param === field);
@@ -177,13 +214,14 @@ test("standard unsupported semantic fields differ from unknown request fields", 
   }
   assert.throws(() => convert(request({ nonstandardControl: true })), error => error.code === "unknown_parameter");
   assert.throws(() => convert(request({ messages: [{ role: "user", content: "fixture", name: "participant" }] })), error => error.code === "unsupported_parameter" && error.param === "messages[0].name");
+  assert.throws(() => convert(request({ messages: [{ role: "user", content: "fixture", name: 7 }] })), error => error.code === "unsupported_parameter" && error.param === "messages[0].name");
   assert.throws(() => convert(request({ messages: [{ role: "function", name: "lookup", content: "fixture" }] })), error => error.code === "unsupported_parameter" && error.param === "messages[0].role");
 });
 
 test("zero alternatives does not silently disable an enabled logprob request", () => {
-  for (const extras of [{ top_logprobs: 0 }, { logprobs: false, top_logprobs: 0 }]) {
-    assert.throws(() => convert(request(extras)), error => error.code === "invalid_parameter" && error.param === "top_logprobs");
-  }
+  assert.throws(() => convert(request({ top_logprobs: 0 })), error => error.code === "invalid_parameter" && error.param === "top_logprobs");
+  // logprobs:false with zero alternatives is the exact disabled default, so the pair is inert.
+  assert.deepEqual(convert(request({ logprobs: false, top_logprobs: 0 })), convert(request()));
   assert.throws(() => convert(request({ logprobs: true, top_logprobs: 0 })), error => error.code === "unsupported_parameter");
   assert.deepEqual(convert(request({ logprobs: false, top_logprobs: null })), convert(request()));
 });

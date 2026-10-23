@@ -291,8 +291,10 @@ function validateStandardScalarShapes(body) {
 const REQUEST_FIELDS = ["model", "messages", "stream", "stream_options", "n", "tools", "tool_choice", "parallel_tool_calls", "reasoning_effort", "reasoning_mode", "reasoning_context", "max_tokens", "max_completion_tokens", "temperature", "top_p", "response_format", "verbosity", "prompt_cache_key", "prompt_cache_options", "store", "metadata", "user", "safety_identifier"];
 function toResponsesRequest(body, config) {
   if (!object(body)) fail("body", "Request body must be an object");
-  validateStandardScalarShapes(body);
+  // Normalize exact inert defaults before shape checks: logprobs:false with
+  // top_logprobs:0 is unset, not an enabled logprob request.
   body = normalizeChatDefaults(body).body;
+  validateStandardScalarShapes(body);
   fields(body, REQUEST_FIELDS, "body");
   if (!object(config) || !object(config.models)) throw new BridgeError("Model routing is not configured", { status: 503, type: "proxy_configuration_error", code: "invalid_configuration" });
   const alias = own(body, "model") ? string(body.model, "model", 256) : config.defaultModel;
@@ -331,7 +333,6 @@ function toResponsesRequest(body, config) {
       if (message.function_call === null) delete message.function_call;
       if (Array.isArray(message.tool_calls) && message.tool_calls.length === 0) delete message.tool_calls;
     }
-    if (own(message, "name") && role !== "tool" && typeof message.name !== "string") fail(`${path}.name`, "Chat participant name must be a string");
     const messageFields = role === "tool" ? ["role", "content", "tool_call_id"] : role === "assistant" ? ["role", "content", "tool_calls", "refusal", "reasoning_content", "phase", "annotations"] : ["role", "content"];
     if (own(message, "annotations")) validateClientMetadata(message.annotations, `${path}.annotations`);
     const clientFields = Array.isArray(config.clientMetadataFields) ? config.clientMetadataFields : WORKBUDDY_MESSAGE_FIELDS;
@@ -467,7 +468,7 @@ function toResponsesRequest(body, config) {
     positiveInteger(body[key], key);
     if (body[key] > cap) fail(key, "Requested output budget exceeds the configured deployment cap");
   }
-  const requestedCap = body.max_completion_tokens ?? body.max_tokens ?? cap;
+  const requestedCap = body.max_completion_tokens ?? body.max_tokens ?? Math.min(config.defaultMaxOutputTokens ?? cap, cap);
   request.max_output_tokens = requestedCap;
 
   const text = {};

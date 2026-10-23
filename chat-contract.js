@@ -82,6 +82,11 @@ function normalizeChatDefaults(body) {
   // Exact documented disabled/default values only. Nonzero/enabled controls are
   // retained for capability rejection, never silently discarded.
   for (const key of ["frequency_penalty", "presence_penalty"]) if (normalized[key] === 0) omit(key);
+  // Inert service/moderation controls and a disabled logprob pair are exact
+  // documented defaults. Sampling (temperature/top_p) stays with BRIDGE_SAMPLING_POLICY.
+  if (normalized.service_tier === "auto") omit("service_tier");
+  if (normalized.moderation === "auto") omit("moderation");
+  if (normalized.logprobs === false && normalized.top_logprobs === 0) { omit("logprobs"); omit("top_logprobs"); }
   if (normalized.logprobs === false && !Object.hasOwn(normalized, "top_logprobs")) omit("logprobs");
   if (normalized.logit_bias && typeof normalized.logit_bias === "object" && !Array.isArray(normalized.logit_bias) && Object.keys(normalized.logit_bias).length === 0) omit("logit_bias");
   if (Array.isArray(normalized.modalities) && normalized.modalities.length === 1 && normalized.modalities[0] === "text") omit("modalities");

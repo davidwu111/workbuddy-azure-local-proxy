@@ -32,6 +32,19 @@ test("invalid ports, budgets, limit/timeouts and JSON fail before listening", ()
   assert.throws(() => loadConfig({ env: env({ BRIDGE_MODELS: "{" }) }), /BRIDGE_MODELS/);
   assert.throws(() => loadConfig({ env: env({ BRIDGE_ALLOW_STORE: "yes" }) }), /BRIDGE_ALLOW_STORE/);
 });
+test("default output budget inherits the ceiling but stays independently configurable", () => {
+  assert.equal(validateConfig(raw()).defaultMaxOutputTokens, 128000);
+  assert.equal(loadConfig({ env: env() }).defaultMaxOutputTokens, 128000);
+  assert.equal(validateConfig(raw({ maxOutputTokens: 64000 })).defaultMaxOutputTokens, 64000);
+  assert.equal(loadConfig({ env: env({ BRIDGE_MAX_OUTPUT_TOKENS: "64000" }) }).defaultMaxOutputTokens, 64000);
+  assert.equal(validateConfig(raw({ maxOutputTokens: 64000, defaultMaxOutputTokens: 4096 })).defaultMaxOutputTokens, 4096);
+  assert.equal(loadConfig({ env: env({ BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS: "4096" }) }).defaultMaxOutputTokens, 4096);
+  assert.throws(() => validateConfig(raw({ maxOutputTokens: 1000, defaultMaxOutputTokens: 1001 })), { code: "INVALID_CONFIG", param: "defaultMaxOutputTokens" });
+  assert.throws(() => loadConfig({ env: env({ BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS: "128001" }) }), { code: "INVALID_CONFIG", param: "defaultMaxOutputTokens" });
+  for (const value of ["0", "-1", "1.5", "4096oops", ""]) assert.throws(() => loadConfig({ env: env({ BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS: value }) }), { code: "INVALID_CONFIG" });
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ defaultMaxOutputTokens: 4096 })).configId);
+  assert.equal(validateConfig(raw()).configId, validateConfig(raw({ defaultMaxOutputTokens: 128000 })).configId);
+});
 test("Node dotenv grammar and explicit environment precedence are shared", async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-config-test-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));

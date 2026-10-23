@@ -23,7 +23,7 @@ const EMPTY_PROFILE = Object.freeze({
   containerIds: Object.freeze([]), customToolNames: Object.freeze([]), mediaUrls: Object.freeze([]),
   imageModels: Object.freeze([]), mcpServers: Object.freeze([]), verifiedCapabilities: Object.freeze([]),
 });
-function fail(param, code = "invalid_parameter") { throw Object.assign(new Error("Unsupported or invalid native request parameter"), { code, status: 400, type: "invalid_request_error", param }); }
+function fail(param, code = "invalid_parameter", message = "Unsupported or invalid native request parameter") { throw Object.assign(new Error(message), { code, status: 400, type: "invalid_request_error", param }); }
 function fields(value, allowed, param) {
   if (!object(value)) fail(param);
   for (const key of Object.keys(value)) if (!allowed.includes(key)) fail(param ? `${param}.${key}` : key, "unsupported_parameter");
@@ -129,10 +129,10 @@ function content(value, role, param, profile) {
     return part;
   });
 }
-function inputItems(input, profile) {
-  if (typeof input === "string") return input;
-  if (!Array.isArray(input) || input.length > maxItems) fail("input");
-  const seen = new Set(), pending = new Set();
+function inputItems(input, profile, policy) {
+  if (typeof input === "string") { if (!input.length) fail("input"); return input; }
+  if (!Array.isArray(input) || !input.length || input.length > maxItems) fail("input");
+  const seen = new Set(), pending = new Set(), instructionRoles = new Set();
   const result = input.map((item, index) => {
     const param = `input[${index}]`;
     if (!object(item)) fail(param);
@@ -140,10 +140,18 @@ function inputItems(input, profile) {
     if (type === "message") {
       fields(item, ["type", "id", "role", "content", "status", "phase"], param);
       choice(item.role, ["system", "developer", "user", "assistant"], `${param}.role`);
+      let role = item.role;
+      if (role === "system" || role === "developer") {
+        instructionRoles.add(role);
+        if (policy === "reject-mixed" && instructionRoles.size > 1) fail(`${param}.role`, "invalid_parameter", "Mixed system/developer instructions are disabled by policy");
+        if (policy === "system" || policy === "developer") role = policy;
+      }
       if (own(item, "id") && !identifier(item.id)) fail(`${param}.id`);
       if (own(item, "status")) choice(item.status, ["completed", "in_progress", "incomplete"], `${param}.status`);
       if (own(item, "phase") && (item.role !== "assistant" || item.phase !== null && !["commentary", "final_answer"].includes(item.phase))) fail(`${param}.phase`);
-      return { ...item, content: content(item.content, item.role, `${param}.content`, profile) };
+      const message = { ...item, content: content(item.content, item.role, `${param}.content`, profile) };
+      if (role !== item.role) message.role = role;
+      return message;
     }
     if (type === "function_call" || type === "custom_tool_call") {
       const isCustom = type === "custom_tool_call", inputField = isCustom ? "input" : "arguments";
@@ -268,6 +276,7 @@ function reasoningFor(value, route, config) {
 function textFor(value, route) {
   if (value === undefined) return undefined;
   fields(value, ["format", "verbosity"], "text");
+  if (!Object.keys(value).length) return undefined;
   if (own(value, "verbosity")) { if (!route.profile.verbosity) fail("text.verbosity", "unsupported_parameter"); choice(value.verbosity, ["low", "medium", "high"], "text.verbosity"); }
   if (own(value, "format")) {
     const format = value.format;
@@ -294,8 +303,16 @@ function requestScope(tools) {
   }
   return scope;
 }
+const inertDefaults = Object.freeze({ truncation: "disabled", top_logprobs: 0, service_tier: "auto", temperature: 1, top_p: 1 });
+function dropInertDefaults(body) {
+  // Values equal to the documented default cannot change provider behaviour, so they are dropped rather than rejected.
+  if (own(body, "metadata") && object(body.metadata) && !Object.keys(body.metadata).length) delete body.metadata;
+  if (own(body, "include") && Array.isArray(body.include) && !body.include.length) delete body.include;
+  for (const [key, value] of Object.entries(inertDefaults)) if (own(body, key) && body[key] === value) delete body[key];
+}
 function validateNativeRequest(original, config) {
   const body = jsonCopy(original, "body"); if (!object(body)) fail("body");
+  dropInertDefaults(body);
   for (const key of Object.keys(body)) if (!topFields.has(key)) fail(key, deferredFields.has(key) ? "unsupported_parameter" : "unknown_parameter");
   const alias = own(body, "model") ? body.model : config.defaultModel;
   if (typeof alias !== "string") fail("model");
@@ -303,7 +320,7 @@ function validateNativeRequest(original, config) {
   const route = config.models[alias];
   const profile = own(config.nativePolicies || {}, alias) ? config.nativePolicies[alias] : EMPTY_PROFILE;
   if (!own(body, "input")) fail("input");
-  const input = inputItems(body.input, profile);
+  const input = inputItems(body.input, profile, config.instructionPolicy ?? "preserve");
   if (own(body, "instructions") && body.instructions !== null && typeof body.instructions !== "string") fail("instructions");
   if (own(body, "stream") && body.stream !== null && typeof body.stream !== "boolean") fail("stream");
   if (own(body, "background") && body.background !== false && body.background !== null) fail("background", body.background === true ? "unsupported_parameter" : "invalid_parameter");
@@ -335,7 +352,7 @@ function validateNativeRequest(original, config) {
     }
   }
   if (own(body, "parallel_tool_calls") && body.parallel_tool_calls !== null && typeof body.parallel_tool_calls !== "boolean") fail("parallel_tool_calls");
-  const payload = { model: route.deployment, input, store: storeRequested, max_output_tokens: body.max_output_tokens ?? cap };
+  const payload = { model: route.deployment, input, store: storeRequested, max_output_tokens: body.max_output_tokens ?? Math.min(config.defaultMaxOutputTokens ?? cap, cap) };
   if (own(body, "instructions")) payload.instructions = body.instructions;
   if (own(body, "stream")) payload.stream = streaming;
   const reasoning = reasoningFor(body.reasoning, route, config), text = textFor(body.text, route);
@@ -343,7 +360,7 @@ function validateNativeRequest(original, config) {
   if (text !== undefined) payload.text = text;
   if (own(body, "tools")) payload.tools = tools.map(({ _nativeKind, ...tool }) => tool);
   if (toolChoice !== undefined) payload.tool_choice = typeof toolChoice === "string" ? toolChoice : { type: toolChoice.type, name: toolChoice.name };
-  if (own(body, "parallel_tool_calls")) payload.parallel_tool_calls = body.parallel_tool_calls;
+  if (typeof body.parallel_tool_calls === "boolean") payload.parallel_tool_calls = body.parallel_tool_calls;
   const permissions = Object.freeze({
     toolNames: Object.freeze(names), customNames: Object.freeze(customNames), declared,
     tools: Object.freeze(tools.map(({ _nativeKind, ...tool }) => Object.freeze({ ...tool, kind: _nativeKind }))),

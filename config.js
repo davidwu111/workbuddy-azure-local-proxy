@@ -104,6 +104,9 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   if (!Object.hasOwn(config.models, config.defaultModel)) fail("defaultModel", "must identify a permitted alias");
   config.nativePolicies = normalizeNativePolicies(raw.nativePolicies ?? Object.create(null), Object.keys(config.models));
   config.maxOutputTokens = positive(raw.maxOutputTokens ?? 128000, "maxOutputTokens", 128000);
+  // Clients that omit a budget inherit the ceiling unless the operator sets a separate default.
+  config.defaultMaxOutputTokens = positive(raw.defaultMaxOutputTokens ?? config.maxOutputTokens, "defaultMaxOutputTokens", 128000);
+  if (config.defaultMaxOutputTokens > config.maxOutputTokens) fail("defaultMaxOutputTokens", "must not exceed maxOutputTokens");
   config.instructionPolicy = enumValue(raw.instructionPolicy ?? "reject-mixed", ["preserve", "developer", "system", "reject-mixed"], "instructionPolicy");
   config.samplingPolicy = enumValue(raw.samplingPolicy ?? "reject", ["reject", "drop-defaults"], "samplingPolicy");
   config.allowStore = bool(raw.allowStore ?? false, "allowStore");
@@ -153,7 +156,7 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   config.logRetentionDays = positive(raw.logRetentionDays ?? 7, "logRetentionDays", 3650);
   // Never hash credential material into publicly visible identity.
   config.configId = crypto.createHash("sha256").update(JSON.stringify({ host: config.host, port: config.port, tls: Boolean(config.tlsCert), models: config.models, defaultModel: config.defaultModel,
-    azureBase: config.azureBase, maxOutputTokens: config.maxOutputTokens, instructionPolicy: config.instructionPolicy,
+    azureBase: config.azureBase, maxOutputTokens: config.maxOutputTokens, defaultMaxOutputTokens: config.defaultMaxOutputTokens, instructionPolicy: config.instructionPolicy,
     samplingPolicy: config.samplingPolicy, allowStore: config.allowStore, nativeResponses: config.nativeResponses, defaults: config.defaults,
     clientMetadataFields: config.clientMetadataFields, clientMetadataMode: config.clientMetadataMode, nativePolicies: config.nativePolicies,
     limits: config.limits, timeouts: config.timeouts })).digest("hex").slice(0, 16);
@@ -195,6 +198,7 @@ function loadConfig({ env = process.env, envFile, allowHttpLocalhostForTests = f
     azureBase: merged.AZURE_OPENAI_BASE, approvedOrigins: jsonEnv(merged, "BRIDGE_APPROVED_ORIGINS", []),
     azureApiKey: merged.AZURE_OPENAI_API_KEY, proxyToken: merged.BRIDGE_PROXY_TOKEN, models, defaultModel,
     maxOutputTokens: integerEnv(merged, "BRIDGE_MAX_OUTPUT_TOKENS", 128000),
+    defaultMaxOutputTokens: integerEnv(merged, "BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS", undefined),
     instructionPolicy: merged.BRIDGE_INSTRUCTION_POLICY ?? "reject-mixed", samplingPolicy: merged.BRIDGE_SAMPLING_POLICY ?? "reject",
     allowStore: booleanEnv(merged, "BRIDGE_ALLOW_STORE", false), nativeResponses: booleanEnv(merged, "BRIDGE_NATIVE_RESPONSES", false), defaults,
      nativePolicies: jsonEnv(merged, "BRIDGE_NATIVE_POLICIES", {}),

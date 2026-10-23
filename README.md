@@ -91,11 +91,14 @@ never forwarded.
 The route is stateless and deny-by-default. The accepted top-level fields are `model`, `input`, `instructions`, `stream`, `max_output_tokens`,
 `reasoning`, `tools`, `tool_choice`, `parallel_tool_calls`, `text`, `store` and `background` (false/null only). Hosted tools, input media,
 file/vector-store/container IDs and MCP servers require an explicit per-alias grant in `BRIDGE_NATIVE_POLICIES`; plain function tools need no
-grant. Unknown fields fail locally, and recognised-but-deferred fields return `unsupported_parameter` rather than being forwarded.
+grant. Unknown fields fail locally. Exact inert defaults (`metadata:{}`, `include:[]`, `truncation:"disabled"`, `top_logprobs:0`,
+`service_tier:"auto"`, `temperature:1`, `top_p:1`, `parallel_tool_calls:null`, `text:{}`) are dropped; every other deferred or enabled
+value returns `unsupported_parameter` rather than being forwarded. Empty `input` is rejected locally. `BRIDGE_INSTRUCTION_POLICY` applies
+to native input exactly as it does on the Chat route.
 
 Provider storage needs three independent opt-ins: `BRIDGE_ALLOW_STORE=true`, `nativePolicies[alias].allowStore`, and `store:true` on the
 request. Background jobs, response/conversation chaining, `include`, and the retrieve/delete/cancel routes are not implemented;
-`background:true`, `previous_response_id`, `conversation` and `include` are rejected locally.
+`background:true`, `previous_response_id`, `conversation` and non-empty `include` are rejected locally.
 
 Streaming relays native event types, metadata, ordering and numeric usage. It never fabricates Chat chunks or `[DONE]`, and a mid-stream
 failure emits one bounded `bridge.error` event. Tool calls are validated against the request's declared tools and grants, and are never
@@ -123,10 +126,10 @@ The public client docs do not establish a full wire contract for `reasoning_cont
 The [compatibility contract](<docs/compatibility.md>) enumerates supported, rejected, and ignored fields. The [staged compatibility plan](<docs/staged-compatibility.md>) explains the four-way classification and the WorkBuddy 5.8.3 field policy. Important policies:
 
 - Standard Chat Completions fields are **recognised**, then classified as mapped, deliberately normalized, standard-but-unsupported (`unsupported_parameter`), or unknown (`unknown_parameter`). A field is never accepted and then silently dropped.
-- Exact disabled/unset defaults are normalized (nullable options, zero penalties, empty bias/stop, text-only modalities, disabled logprobs). Enabled semantic controls the bridge cannot honour are rejected rather than clamped or replaced.
+- Exact disabled/unset defaults are normalized (nullable options, zero penalties, empty bias/stop, text-only modalities, `service_tier:"auto"`, `moderation:"auto"`, and the disabled `logprobs:false` + `top_logprobs:0` pair). Enabled semantic controls the bridge cannot honour are rejected rather than clamped or replaced.
 - Explicit supported effort is preserved, including `none` for Sol/Luna; Astra/6.1 Sol reject `none`. A profile-rejected effort is `unsupported_parameter`, never substituted.
 - Sampling combinations are gated by effective effort/profile. Default policy rejects incompatible values. `BRIDGE_SAMPLING_POLICY=drop-defaults` only removes incompatible `temperature` or `top_p` exactly equal to `1`, and reports field names; it never silently replaces effort.
-- `BRIDGE_INSTRUCTION_POLICY=reject-mixed` rejects mixing system and developer roles; other explicit policies preserve or normalize roles in chronological order, with block boundaries intact.
+- `BRIDGE_INSTRUCTION_POLICY=reject-mixed` rejects mixing system and developer roles on both the Chat and native routes; other explicit policies preserve or normalize roles in chronological order, with block boundaries intact.
 - WorkBuddy's message-level `startsNewUserRequest` (boolean), `agent` and `conversationRequestId` (bounded opaque JSON) are validated and ignored by the stateless adapter. None is forwarded to Azure, used as provider metadata, or used to infer session/branch identity. `BRIDGE_CLIENT_METADATA_FIELDS` extends the named list; `BRIDGE_CLIENT_METADATA_MODE=auto` (default) also absorbs any other non-standard message key after bounded validation, recording only its name. Standard/reserved message fields and unknown top-level fields are still rejected in both modes.
 - Function tools default omitted or `null` `strict` to explicit `false`; explicit strictness and supported structured-output formats are preserved. Streaming tool-call fields are buffered until the terminal response validates complete calls; text/refusal/summary can still stream incrementally. This intentional tool latency prevents partial-call execution, but still requires actual WorkBuddy verification.
 - `store:false` is sent by default; `store:null` resolves to that declared policy. Enabling provider storage requires explicit `BRIDGE_ALLOW_STORE=true` and a request/default storage opt-in. **Stored chaining is still not implemented.** Provider storage and prompt caching are separate controls: `store:false` does not disable prompt caching, keep inference local, or guarantee Zero Data Retention.
@@ -157,7 +160,7 @@ Limits are positive configurable **bytes**, not model-token limits. Tune with wo
 
 `responseBytes` bounds upstream total and encoded downstream independently; `sseBufferBytes` constrains active event framing and retained output separately, not total process RSS. Requests above `maxConcurrent` wait for a slot, bounded by `maxQueue` and `timeouts.capacityWaitMs` (default 30 s); set `maxQueue: 0` for immediate 429. A capacity rejection is `rate_limit_error` with `Retry-After: 1`, and queue time is logged as `queuedFor`. Parallel agent workflows need a cap well above a single conversation's request count. Required MIME is JSON for uploads/nonstream upstream, SSE for streaming upstream.
 
-`BRIDGE_TIMEOUTS` accepts positive milliseconds: `uploadMs=30000`, `upstreamIdleMs=300000`, `downstreamStallMs=30000`, `totalMs=1800000`, `shutdownMs=5000`. Upload, upstream idle, downstream stall and total lifetime are distinct; cancellation remains active while awaiting headers/reader/drain. `BRIDGE_MAX_OUTPUT_TOKENS` defaults to 128000 and bounds the forwarded output budget along with the profile cap. Reasoning and visible output share this cap; a low cap can be spent before an answer appears. The bridge does not tokenize/count full input locally.
+`BRIDGE_TIMEOUTS` accepts positive milliseconds: `uploadMs=30000`, `upstreamIdleMs=300000`, `downstreamStallMs=30000`, `totalMs=1800000`, `shutdownMs=5000`. Upload, upstream idle, downstream stall and total lifetime are distinct; cancellation remains active while awaiting headers/reader/drain. `BRIDGE_MAX_OUTPUT_TOKENS` defaults to 128000 and bounds the forwarded output budget along with the profile cap. Clients that omit a budget receive `BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS` (defaults to the ceiling, never above the route profile cap), while explicit values above the ceiling are rejected rather than clamped. Reasoning and visible output share this cap; a low cap can be spent before an answer appears. The bridge does not tokenize/count full input locally.
 
 Operational logs use the Node process's local timezone with ISO timestamps and an explicit UTC offset (for example `2026-10-21T11:45:08.951+08:00`), and allowlisted fields only; they omit prompts, tool arguments, opaque reasoning and credentials. Logs are not Azure billing or a full audit trail.
 
