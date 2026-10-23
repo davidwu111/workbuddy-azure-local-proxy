@@ -73,6 +73,21 @@ Observed result, exceptions, unresolved gaps:
 
 See [compatibility](<compatibility.md>) for the implemented contract and [review disposition](<review-disposition.md>) for offline coverage versus deferred work.
 
-## Live verification harness — not run
+## Live verification harness — Chat probe not run, native capture run once
 
-No live check has been run. The guarded single-probe procedure, approval fields, environment variables, exact step order, rollback and sanitized evidence skeleton are documented in [live verification](<live-verification.md>). The harness refuses without every approval guard and was only checked on its refusal path; this acceptance plan does not authorize spending, an Azure call, or a service restart. `capture-native.cjs` exists for the native route, has likewise only been exercised on its refusal and dry-run paths, and its shape rows remain `not run`.
+The guarded Chat probe has not been run. The single-probe procedure, approval fields, environment variables, exact step order, rollback and sanitized evidence skeleton are documented in [live verification](<live-verification.md>). The harness refuses without every approval guard and was only checked on its refusal path; this acceptance plan does not authorize spending, an Azure call, or a service restart. `capture-native.cjs` exists for the native route; it was run once under the approval recorded in the next section, and its six shape results are listed there.
+
+## Native capture run — 2026-10-23
+
+An authorised native capture run was made once on 2026-10-23 under approval reference `approved-yefan`. It reached Azure only through the local bridge; the approved route was alias and deployment `gpt-6-luna`, variant `gpt-6-luna`, declared version `2026-09-22`, deployment type PAYG. Each of the six sanitized captures in `test-fixtures/azure-responses/captured/` records that same approval reference.
+
+| Shape | Status | Observation |
+|---|---|---|
+| `flat-error` | `inconclusive` | `HTTP 400` with a flat `unsupported_parameter` body on `include`; no SSE `error` event was produced for the pre-flight validation failure, so the flat SSE error event remains unobserved. |
+| `reasoning-nullable-summary` | `inconclusive` | No reasoning item appeared in the stream for a one-word answer, and an item-level null summary was never observed. |
+| `annotations-null` | `inconclusive` | Only `annotations: []` and `logprobs: []` were observed; an explicit `null` was not. |
+| `image-streaming` | `fail` | `HTTP 400`: `imagegen deployment must be provided through header: x-ms-oai-image-generation-deployment`; the bridge does not set that header. |
+| `output-boundary` | `pass` | `max_output_tokens:128000` was accepted with `HTTP 200` and usage `input_tokens 13`, `output_tokens 18`, `reasoning_tokens 11`. |
+| `multi-call` | `pass` | After `name` was made optional on `response.function_call_arguments.done`, the same request produced 11 events and two function calls (`probe_a`, `probe_b`) with terminal status `completed`. |
+
+This run does not constitute general Azure acceptance. It does not cover quota, latency, cache savings or price, and the rows in the proposed real-check matrix above remain unchanged.

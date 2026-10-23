@@ -286,3 +286,15 @@ test("imports have no environment, fixture, listener or logging effects", () => 
     assert.deepEqual(effects, []);
   } finally { http.createServer = originalCreate; process.loadEnvFile = originalLoad; console.log = originalLog; }
 });
+
+test("function_call_arguments.done does not require a tool name the provider never sends", () => {
+  const payload = { type: "response.function_call_arguments.done", item_id: "fc_1", output_index: 0, sequence_number: 4, arguments: "{}" };
+  const shape = validateNativeEvent(payload.type, payload);
+  assert.deepEqual(shape, { known: true, terminal: false, category: "function-tool" });
+  // A provider that does include the name must still satisfy the declared type.
+  assert.equal(validateNativeEvent(payload.type, { ...payload, name: "probe_a" }).known, true);
+  assert.throws(() => validateNativeEvent(payload.type, { ...payload, name: null }), { code: "invalid_native_shape" });
+  // arguments stays required.
+  const { arguments: _omitted, ...withoutArguments } = payload;
+  assert.throws(() => validateNativeEvent(payload.type, withoutArguments), { code: "invalid_native_shape" });
+});

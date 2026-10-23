@@ -51,7 +51,6 @@ function fieldsFor(name, category) {
     if (name === "response.output_text.annotation.added") { fields.annotation = "object"; fields.annotation_index = "integer"; }
     if (name === "response.image_generation_call.partial_image") { fields.partial_image_b64 = "string"; fields.partial_image_index = "integer"; }
     if (["response.function_call_arguments.done", "response.mcp_call_arguments.done"].includes(name)) fields.arguments = "string";
-    if (name === "response.function_call_arguments.done") fields.name = "string";
     if (name === "response.custom_tool_call_input.done") fields.input = "string";
     if (name === "response.code_interpreter_call_code.done") fields.code = "string";
     if (name === "response.refusal.done") fields.refusal = "string";
@@ -64,6 +63,9 @@ const registry = Object.create(null);
 for (const [category, names] of Object.entries(groups)) for (const name of names) {
   const entry = { name, category, featureGated: FEATURE_CATEGORIES.includes(category), fields: fieldsFor(name, category) };
   if (name === "error") entry.optionalFields = OPTIONAL_ERROR_FIELDS;
+  // Azure's response.function_call_arguments.done carries arguments but not the tool name;
+  // the name belongs to the item, so require the type only when a provider does send it.
+  if (name === "response.function_call_arguments.done") entry.optionalFields = Object.freeze({ name: "string" });
   registry[name] = Object.freeze(entry);
 }
 const EVENT_REGISTRY = Object.freeze(registry);

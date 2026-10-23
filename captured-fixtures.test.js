@@ -117,7 +117,16 @@ test("flat error captures validate as terminal provider errors", { skip: skip("f
   const capture = fixture("flat-error");
   const file = fileOf(capture);
   const errors = capture.events.filter(event => event && event.type === "error");
-  assert.ok(errors.length > 0, `${file}: no error event captured; status ${capture.status} is not flat-error evidence`);
+  if (!errors.length) {
+    // Azure rejects pre-flight validation failures with a JSON body rather than an SSE error event.
+    const body = capture.response && capture.response.error;
+    assert.ok(body && typeof body === "object", `${file}: no error event and no JSON error body; status ${capture.status} is not flat-error evidence`);
+    assert.equal(typeof body.message, "string", `${file}: provider error body must carry a string message`);
+    assert.equal(typeof body.type, "string", `${file}: provider error body must carry a string type`);
+    for (const key of ["code", "param"]) if (Object.hasOwn(body, key) && body[key] !== null) assert.equal(typeof body[key], "string", `${file}: provider error ${key} must be a string when present`);
+    t.diagnostic(`${file}: provider returned a JSON error body (status ${capture.status}, code ${body.code}), not an SSE error event`);
+    return;
+  }
   for (const payload of errors) {
     let verdict;
     try {

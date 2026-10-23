@@ -159,11 +159,15 @@ function buildRequest(config) {
   const fn = (name) => ({ type: "function", name, parameters: { type: "object", properties: {} } });
   switch (config.shape) {
     case "flat-error":
-      return { model: config.alias, input: "x", max_output_tokens: 2048, tools: [fn("probe")], tool_choice: { type: "function", name: "definitely_not_declared" }, stream: true };
+      // The bridge validates tool_choice and enum fields locally, so a bogus value would be a bridge 400.
+      // This deployment rejects output logprobs on reasoning models, which is a real provider validation failure.
+      return { model: config.alias, input: "Answer with one word: ok.", include: ["message.output_text.logprobs"], top_logprobs: 1, max_output_tokens: 2048, stream: true };
     case "reasoning-nullable-summary":
-      return { input: "Answer with one word: ok.", reasoning: { effort: "low" }, max_output_tokens: 2048, stream: true };
+      // Without an explicit summary request the provider returns no reasoning item at all.
+      return { input: "Answer with one word: ok.", reasoning: { effort: "low", summary: "auto" }, max_output_tokens: 2048, stream: true };
     case "annotations-null":
-      return { input: "Answer with one word: ok.", include: ["message.output_text.logprobs"], top_logprobs: 1, max_output_tokens: 2048, stream: true };
+      // `annotations` appears on output_text parts regardless of logprobs, which this deployment refuses.
+      return { input: "Answer with one word: ok.", max_output_tokens: 2048, stream: true };
     case "image-streaming":
       return { input: "Draw a single red square.", stream: true, max_output_tokens: 2048, tools: [{ type: "image_generation", model: config.imageModel }] };
     case "output-boundary":

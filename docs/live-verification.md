@@ -1,6 +1,6 @@
-# Live verification harness — approval required, not run
+# Live verification harness — approval required, run once on 2026-10-23
 
-**Status: no live check has been run. This document does not authorize spending, an Azure request, a bridge restart, or any change to a running service.** It describes a guarded procedure for a future operator-approved probe. The harness (`live-check.cjs`) was **not executed** for Step 6; only its refusal path was checked without credentials. No real key, token, Azure origin, or deployment name appears here.
+**Status: one authorised native capture run was made on 2026-10-23 under approval reference `approved-yefan`; no other live check has been run.** That run used the native capture harness against the local bridge only, and its six shapes are recorded below. This document does not authorize spending, an Azure request, a bridge restart, or any change to a running service. The Chat harness (`live-check.cjs`) was **not executed** for Step 6; only its refusal path was checked without credentials. No real key, token or Azure origin appears here.
 
 ## Scope and evidence boundary
 
@@ -8,16 +8,16 @@ The harness sends bounded Chat Completions requests to the bridge's **local** `P
 
 A successful run can show only that one approved alias answered one bounded Chat request through the local bridge. It does **not** establish:
 
-- native transport: only an authorized run of the `capture-native.cjs` capture harness can speak to `POST /v1/responses` behavior or transport preservation, and no such run has occurred;
+- native transport: only an authorized run of the `capture-native.cjs` capture harness can speak to `POST /v1/responses` behavior or transport preservation; one such run exists (2026-10-23, approval `approved-yefan`) and is recorded below, but it covers only those six shapes;
 - tool, MCP, audio, code-interpreter, file-search, web-search or image behavior;
 - Azure deployment/version/region support, quota, cache behavior, latency or price;
 - Linux, installed-client or production-listener behavior.
 
 The 53-event Chat acceptance matrix is an offline test, not live evidence.
 
-## Native route capture (added, not run)
+## Native route capture (added, run once on 2026-10-23)
 
-The `capture-native.cjs` harness exists at the repository root and has **not** been run against Azure. Only its refusal path and its `--dry-run` path were exercised; no capture file exists. It posts exactly one request to the local bridge's `POST /v1/responses` at `BRIDGE_LIVE_BASE_URL`; it never contacts Azure directly and never reads `.env`.
+The `capture-native.cjs` harness exists at the repository root and has been run **once**, on 2026-10-23 under approval reference `approved-yefan`, through the local bridge to the approved Azure deployment. Before that run only its refusal path and its `--dry-run` path had been exercised; the six sanitized captures now in `test-fixtures/azure-responses/captured/` are its only output. It posts exactly one request to the local bridge's `POST /v1/responses` at `BRIDGE_LIVE_BASE_URL`; it never contacts Azure directly and never reads `.env`.
 
 Each `--shape` value asks for one deliberately minimal exchange:
 
@@ -27,6 +27,17 @@ Each `--shape` value asks for one deliberately minimal exchange:
 - `image-streaming` — exercises image generation with `stream: true`.
 - `output-boundary` — sends `max_output_tokens` at the configured cap.
 - `multi-call` — asks for two function calls.
+
+One authorised run covered all six shapes on 2026-10-23 under approval reference `approved-yefan`, against the local bridge with alias and deployment `gpt-6-luna`, variant `gpt-6-luna`, declared version `2026-09-22`, PAYG.
+
+| Shape | Observed | What it establishes |
+|---|---|---|
+| `flat-error` | `HTTP 400` with the JSON body `{"error":{"message":"logprobs are not supported with reasoning models.","type":"invalid_request_error","code":"unsupported_parameter","param":"include"}}`; no SSE `error` event. | A pre-flight validation failure returns a flat JSON error rather than an SSE frame. The flat SSE `error` event remains unobserved. |
+| `reasoning-nullable-summary` | `HTTP 200` stream, 9 events, and no reasoning item at all for a one-word answer even with `reasoning:{effort:"low",summary:"auto"}`. The separate non-stream `output-boundary` response did contain one: `{"id":"rs_...","type":"reasoning","content":[],"encrypted_content":"gAAAA..."}`, with `summary` serialized as an empty array. | That short request can return no reasoning item, and a reasoning item can arrive with empty `content` plus `encrypted_content`. An explicit item-level `summary: null` was not observed on this deployment. |
+| `annotations-null` | `HTTP 200` stream; the `output_text` part carried `annotations: []` and `logprobs: []`. | Only the empty-array form was seen; an explicit `null` for either field was not observed. |
+| `image-streaming` | `HTTP 400` with `{"error":{"message":"imagegen deployment must be provided through header: x-ms-oai-image-generation-deployment","type":"image_generation_user_error","code":"invalid_request_error","param":"tools"}}`. | Azure requires a routing header that the bridge never sets and never forwards from clients, so image generation cannot work through this bridge against Azure as currently configured. |
+| `output-boundary` | `HTTP 200` non-stream at `max_output_tokens:128000`; usage `input_tokens 13`, `output_tokens 18`, `reasoning_tokens 11`. | This deployment accepted the 128000 cap for this request once. |
+| `multi-call` | The first run failed mid-stream with `bridge.error` / `invalid_native_shape` after `response.function_call_arguments.delta`, because the event registry required `name` on `response.function_call_arguments.done`. After `name` was made optional and type-checked when present, the same request produced 11 events and two function calls (`probe_a`, `probe_b`), each `.done` carrying `arguments` and no `name`, terminal status `completed`. | Azure omits `name` on that event because the name belongs to the item; the relaxed check suffices for this shape once. |
 
 The guards below are all enforced before any socket is opened; any failure prints one bounded line and exits `2`:
 
@@ -201,4 +212,4 @@ This skeleton is illustrative only; its zeroes and placeholders are not measured
 
 ## Current status
 
-As of **2026-10-23**, no live check has been run against Azure or a bridge deployment. The offline suite and the Step 6 acceptance matrix use synthetic payloads and in-process writers only. The harness's missing-approval refusal path was observed with exit code `2` and no evidence file; that is a guard check, not a live probe. **This document does not authorize spending.** A future run requires a separate approval covering every field above.
+As of **2026-10-23**, the only live check that has been run is the single authorised native capture run recorded above; no other live check has been made against Azure or a bridge deployment. The offline suite and the Step 6 acceptance matrix use synthetic payloads and in-process writers only. The Chat harness's missing-approval refusal path was observed with exit code `2` and no evidence file; that is a guard check, not a live probe. **This document does not authorize spending.** A future run requires a separate approval covering every field above.

@@ -1,0 +1,707 @@
+{
+  "shape": "multi-call",
+  "capturedAt": "2026-10-23T05:59:47.206Z",
+  "approval": "approved-yefan",
+  "endpoint": "/v1/responses",
+  "status": 200,
+  "contentType": "text/event-stream; charset=utf-8",
+  "request": {
+    "input": "Call both tools once, then stop.",
+    "max_output_tokens": 4096,
+    "stream": true,
+    "parallel_tool_calls": true,
+    "tools": [
+      {
+        "type": "function",
+        "name": "probe_a",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "type": "function",
+        "name": "probe_b",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  },
+  "events": [
+    {
+      "type": "response.created",
+      "response": {
+        "id": "resp_014e13f4852b6d99016adaf7d279648195afd0edeec8c6ff2a",
+        "object": "response",
+        "created_at": 1792735186,
+        "status": "in_progress",
+        "background": false,
+        "completed_at": null,
+        "content_filters": null,
+        "error": null,
+        "frequency_penalty": 0,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 4096,
+        "max_tool_calls": null,
+        "model": "gpt-6-luna",
+        "moderation": null,
+        "output": [],
+        "parallel_tool_calls": true,
+        "presence_penalty": 0,
+        "previous_response_id": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": {
+          "mode": "implicit",
+          "ttl": "30m"
+        },
+        "prompt_cache_retention": "24h",
+        "reasoning": {
+          "context": "all_turns",
+          "effort": "medium",
+          "mode": "standard",
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": "auto",
+        "store": false,
+        "temperature": 1,
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": "medium"
+        },
+        "tool_choice": "auto",
+        "tool_usage": {
+          "image_gen": {
+            "input_tokens": 0,
+            "input_tokens_details": {
+              "image_tokens": 0,
+              "text_tokens": 0
+            },
+            "output_tokens": 0,
+            "output_tokens_details": {
+              "image_tokens": 0,
+              "text_tokens": 0
+            },
+            "total_tokens": 0
+          },
+          "web_search": {
+            "num_requests": 0
+          }
+        },
+        "tools": [
+          {
+            "type": "function",
+            "description": null,
+            "name": "probe_a",
+            "output_schema": null,
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true
+          },
+          {
+            "type": "function",
+            "description": null,
+            "name": "probe_b",
+            "output_schema": null,
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true
+          }
+        ],
+        "top_logprobs": 0,
+        "top_p": 0.98,
+        "truncation": "disabled",
+        "usage": null,
+        "user": null,
+        "metadata": {}
+      },
+      "sequence_number": 0
+    },
+    {
+      "type": "response.in_progress",
+      "response": {
+        "id": "resp_014e13f4852b6d99016adaf7d279648195afd0edeec8c6ff2a",
+        "object": "response",
+        "created_at": 1792735186,
+        "status": "in_progress",
+        "background": false,
+        "completed_at": null,
+        "content_filters": null,
+        "error": null,
+        "frequency_penalty": 0,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 4096,
+        "max_tool_calls": null,
+        "model": "gpt-6-luna",
+        "moderation": null,
+        "output": [],
+        "parallel_tool_calls": true,
+        "presence_penalty": 0,
+        "previous_response_id": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": {
+          "mode": "implicit",
+          "ttl": "30m"
+        },
+        "prompt_cache_retention": "24h",
+        "reasoning": {
+          "context": "all_turns",
+          "effort": "medium",
+          "mode": "standard",
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": "auto",
+        "store": false,
+        "temperature": 1,
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": "medium"
+        },
+        "tool_choice": "auto",
+        "tool_usage": {
+          "image_gen": {
+            "input_tokens": 0,
+            "input_tokens_details": {
+              "image_tokens": 0,
+              "text_tokens": 0
+            },
+            "output_tokens": 0,
+            "output_tokens_details": {
+              "image_tokens": 0,
+              "text_tokens": 0
+            },
+            "total_tokens": 0
+          },
+          "web_search": {
+            "num_requests": 0
+          }
+        },
+        "tools": [
+          {
+            "type": "function",
+            "description": null,
+            "name": "probe_a",
+            "output_schema": null,
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true
+          },
+          {
+            "type": "function",
+            "description": null,
+            "name": "probe_b",
+            "output_schema": null,
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true
+          }
+        ],
+        "top_logprobs": 0,
+        "top_p": 0.98,
+        "truncation": "disabled",
+        "usage": null,
+        "user": null,
+        "metadata": {}
+      },
+      "sequence_number": 1
+    },
+    {
+      "type": "response.output_item.added",
+      "item": {
+        "id": "fc_014e13f4852b6d99016adaf7d35fdc8195b5039a3703cdf069",
+        "type": "function_call",
+        "status": "in_progress",
+        "arguments": "",
+        "call_id": "call_Y96KZFToVEBiX9kmigsvY700",
+        "name": "probe_a"
+      },
+      "output_index": 0,
+      "sequence_number": 2
+    },
+    {
+      "type": "response.function_call_arguments.delta",
+      "delta": "{}",
+      "item_id": "fc_014e13f4852b6d99016adaf7d35fdc8195b5039a3703cdf069",
+      "obfuscation": "VQOsuiLmpHxscz",
+      "output_index": 0,
+      "sequence_number": 3
+    },
+    {
+      "type": "response.function_call_arguments.done",
+      "arguments": "{}",
+      "item_id": "fc_014e13f4852b6d99016adaf7d35fdc8195b5039a3703cdf069",
+      "output_index": 0,
+      "sequence_number": 4
+    },
+    {
+      "type": "response.output_item.done",
+      "item": {
+        "id": "fc_014e13f4852b6d99016adaf7d35fdc8195b5039a3703cdf069",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{}",
+        "call_id": "call_Y96KZFToVEBiX9kmigsvY700",
+        "name": "probe_a"
+      },
+      "output_index": 0,
+      "sequence_number": 5
+    },
+    {
+      "type": "response.output_item.added",
+      "item": {
+        "id": "fc_014e13f4852b6d99016adaf7d362e48195afaf4d6b9d9dd649",
+        "type": "function_call",
+        "status": "in_progress",
+        "arguments": "",
+        "call_id": "call_zEe6n59XLL7f9XC0N4KlmUz9",
+        "name": "probe_b"
+      },
+      "output_index": 1,
+      "sequence_number": 6
+    },
+    {
+      "type": "response.function_call_arguments.delta",
+      "delta": "{}",
+      "item_id": "fc_014e13f4852b6d99016adaf7d362e48195afaf4d6b9d9dd649",
+      "obfuscation": "3QOXtFFBYGWaCE",
+      "output_index": 1,
+      "sequence_number": 7
+    },
+    {
+      "type": "response.function_call_arguments.done",
+      "arguments": "{}",
+      "item_id": "fc_014e13f4852b6d99016adaf7d362e48195afaf4d6b9d9dd649",
+      "output_index": 1,
+      "sequence_number": 8
+    },
+    {
+      "type": "response.output_item.done",
+      "item": {
+        "id": "fc_014e13f4852b6d99016adaf7d362e48195afaf4d6b9d9dd649",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{}",
+        "call_id": "call_zEe6n59XLL7f9XC0N4KlmUz9",
+        "name": "probe_b"
+      },
+      "output_index": 1,
+      "sequence_number": 9
+    },
+    {
+      "type": "response.completed",
+      "response": {
+        "id": "resp_014e13f4852b6d99016adaf7d279648195afd0edeec8c6ff2a",
+        "object": "response",
+        "created_at": 1792735186,
+        "status": "completed",
+        "background": false,
+        "completed_at": 1792735187,
+        "content_filters": [
+          {
+            "blocked": false,
+            "source_type": "prompt",
+            "content_filter_raw": [],
+            "content_filter_results": {
+              "hate": {
+                "filtered": false,
+                "severity": "safe"
+              },
+              "sexual": {
+                "filtered": false,
+                "severity": "safe"
+              },
+              "violence": {
+                "filtered": false,
+                "severity": "safe"
+              },
+              "self_harm": {
+                "filtered": false,
+                "severity": "safe"
+              },
+              "jailbreak": {
+                "detected": false,
+                "filtered": false
+              }
+            },
+            "content_filter_offsets": {
+              "start_offset": 0,
+              "end_offset": 65,
+              "check_offset": 0
+            }
+          },
+          {
+            "blocked": false,
+            "source_type": "completion",
+            "content_filter_raw": [],
+            "content_filter_results": {
+              "protected_material_code": {
+                "detected": false,
+                "filtered": false
+              },
+              "protected_material_text": {
+                "detected": false,
+                "filtered": false
+              },
+              "hate": {
+                "filtered": false,
+                "severity": "safe"
+              },
+              "sexual": {
+                "filtered": false,
+                "severity": "safe"
+              },
+              "violence": {
+                "filtered": false,
+                "severity": "safe"
+              },
+              "self_harm": {
+                "filtered": false,
+                "severity": "safe"
+              }
+            },
+            "content_filter_offsets": {
+              "start_offset": 0,
+              "end_offset": 125,
+              "check_offset": 0
+            }
+          }
+        ],
+        "error": null,
+        "frequency_penalty": 0,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 4096,
+        "max_tool_calls": null,
+        "model": "gpt-6-luna",
+        "moderation": null,
+        "output": [
+          {
+            "id": "fc_014e13f4852b6d99016adaf7d35fdc8195b5039a3703cdf069",
+            "type": "function_call",
+            "status": "completed",
+            "arguments": "{}",
+            "call_id": "call_Y96KZFToVEBiX9kmigsvY700",
+            "name": "probe_a"
+          },
+          {
+            "id": "fc_014e13f4852b6d99016adaf7d362e48195afaf4d6b9d9dd649",
+            "type": "function_call",
+            "status": "completed",
+            "arguments": "{}",
+            "call_id": "call_zEe6n59XLL7f9XC0N4KlmUz9",
+            "name": "probe_b"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "presence_penalty": 0,
+        "previous_response_id": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": {
+          "mode": "implicit",
+          "ttl": "30m"
+        },
+        "prompt_cache_retention": "24h",
+        "reasoning": {
+          "context": "all_turns",
+          "effort": "medium",
+          "mode": "standard",
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": "default",
+        "store": false,
+        "temperature": 1,
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": "medium"
+        },
+        "tool_choice": "auto",
+        "tool_usage": {
+          "image_gen": {
+            "input_tokens": 0,
+            "input_tokens_details": {
+              "image_tokens": 0,
+              "text_tokens": 0
+            },
+            "output_tokens": 0,
+            "output_tokens_details": {
+              "image_tokens": 0,
+              "text_tokens": 0
+            },
+            "total_tokens": 0
+          },
+          "web_search": {
+            "num_requests": 0
+          }
+        },
+        "tools": [
+          {
+            "type": "function",
+            "description": null,
+            "name": "probe_a",
+            "output_schema": null,
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true
+          },
+          {
+            "type": "function",
+            "description": null,
+            "name": "probe_b",
+            "output_schema": null,
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true
+          }
+        ],
+        "top_logprobs": 0,
+        "top_p": 0.98,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 45,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 45,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 90
+        },
+        "user": null,
+        "metadata": {}
+      },
+      "sequence_number": 10
+    }
+  ],
+  "response": {
+    "id": "resp_014e13f4852b6d99016adaf7d279648195afd0edeec8c6ff2a",
+    "object": "response",
+    "created_at": 1792735186,
+    "status": "completed",
+    "background": false,
+    "completed_at": 1792735187,
+    "content_filters": [
+      {
+        "blocked": false,
+        "source_type": "prompt",
+        "content_filter_raw": [],
+        "content_filter_results": {
+          "hate": {
+            "filtered": false,
+            "severity": "safe"
+          },
+          "sexual": {
+            "filtered": false,
+            "severity": "safe"
+          },
+          "violence": {
+            "filtered": false,
+            "severity": "safe"
+          },
+          "self_harm": {
+            "filtered": false,
+            "severity": "safe"
+          },
+          "jailbreak": {
+            "detected": false,
+            "filtered": false
+          }
+        },
+        "content_filter_offsets": {
+          "start_offset": 0,
+          "end_offset": 65,
+          "check_offset": 0
+        }
+      },
+      {
+        "blocked": false,
+        "source_type": "completion",
+        "content_filter_raw": [],
+        "content_filter_results": {
+          "protected_material_code": {
+            "detected": false,
+            "filtered": false
+          },
+          "protected_material_text": {
+            "detected": false,
+            "filtered": false
+          },
+          "hate": {
+            "filtered": false,
+            "severity": "safe"
+          },
+          "sexual": {
+            "filtered": false,
+            "severity": "safe"
+          },
+          "violence": {
+            "filtered": false,
+            "severity": "safe"
+          },
+          "self_harm": {
+            "filtered": false,
+            "severity": "safe"
+          }
+        },
+        "content_filter_offsets": {
+          "start_offset": 0,
+          "end_offset": 125,
+          "check_offset": 0
+        }
+      }
+    ],
+    "error": null,
+    "frequency_penalty": 0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": 4096,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+      {
+        "id": "fc_014e13f4852b6d99016adaf7d35fdc8195b5039a3703cdf069",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{}",
+        "call_id": "call_Y96KZFToVEBiX9kmigsvY700",
+        "name": "probe_a"
+      },
+      {
+        "id": "fc_014e13f4852b6d99016adaf7d362e48195afaf4d6b9d9dd649",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{}",
+        "call_id": "call_zEe6n59XLL7f9XC0N4KlmUz9",
+        "name": "probe_b"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_options": {
+      "mode": "implicit",
+      "ttl": "30m"
+    },
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "all_turns",
+      "effort": "medium",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": false,
+    "temperature": 1,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "function",
+        "description": null,
+        "name": "probe_a",
+        "output_schema": null,
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "required": []
+        },
+        "strict": true
+      },
+      {
+        "type": "function",
+        "description": null,
+        "name": "probe_b",
+        "output_schema": null,
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "required": []
+        },
+        "strict": true
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 45,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 45,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 90
+    },
+    "user": null,
+    "metadata": {}
+  },
+  "notes": "terminal event response"
+}
