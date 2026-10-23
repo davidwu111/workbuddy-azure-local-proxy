@@ -366,7 +366,7 @@ function validateNativeRequest(original, config) {
     tools: Object.freeze(tools.map(({ _nativeKind, ...tool }) => Object.freeze({ ...tool, kind: _nativeKind }))),
     toolChoice: typeof toolChoice === "string" ? toolChoice : toolChoice ? Object.freeze({ type: toolChoice.type, name: toolChoice.name }) : undefined,
     scope: Object.freeze(requestScope(tools)),
-    profile, maxItems, maxBytes: Math.min(config.limits.sseBufferBytes, config.limits.responseBytes),
+    profile, maxItems, maxIdentityBytes: Math.min(config.limits.sseBufferBytes, config.limits.responseBytes),
   });
   return Object.freeze({ alias, route, payload, permissions });
 }
@@ -376,7 +376,7 @@ function createNativeResponsePolicy(request) {
   const forced = p.toolChoice && object(p.toolChoice) ? p.toolChoice : undefined;
   const nameAllowed = (name, kind) => functionName(name) && (kind === "custom" ? p.customNames.includes(name) : p.toolNames.includes(name)) && (!forced || forced.name === name);
   const kindByItemType = { function_call: "function", custom_tool_call: "custom", web_search_call: "web-search", file_search_call: "file-search", code_interpreter_call: "code-interpreter", image_generation_call: "image-generation", mcp_call: "mcp", mcp_list_tools: "mcp", mcp_approval_request: "mcp" };
-  const charge = size => { if (size <= 0) return true; if (bytes + size > p.maxBytes) return false; bytes += size; return true; };
+  const charge = size => { if (size <= 0) return true; if (bytes + size > p.maxIdentityBytes) return false; bytes += size; return true; };
   const toolForItem = item => p.tools.find(tool => tool.kind === kindByItemType[item.type] && (MCP_TYPES.has(item.type) ? item.server_label === tool.server_label : true));
   const toolAllowedHere = item => {
     const tool = toolForItem(item);

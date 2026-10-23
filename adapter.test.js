@@ -679,3 +679,13 @@ test("fallback identity/timestamps are deterministic and deployment never substi
   assert.equal(first.id, "chatcmpl-response"); assert.equal(first.created, 0); assert.equal(first.model, "local-luna");
   assert.throws(() => extractResponse(response(), undefined), (error) => error.status === 502);
 });
+
+test("refusal-only output is flagged as a content fallback without changing the outcome", () => {
+  const refusalOnly = { id: "r", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "refusal", refusal: "no" }] }] };
+  const mapped = extractResponse(refusalOnly, "local-luna");
+  assert.equal(mapped.choices[0].message.content, "no");
+  assert.equal(mapped.choices[0].message.refusal, "no");
+  assert.deepEqual(mapped.bridge_warnings, ["refusal_content_fallback"]);
+  const withText = { ...refusalOnly, output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }, { type: "refusal", refusal: "no" }] }] };
+  assert.equal(extractResponse(withText, "local-luna").bridge_warnings, undefined);
+});

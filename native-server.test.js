@@ -115,6 +115,19 @@ test("upstream HTTP errors retain safe status/retry advice and redact credential
   let calls = 0; const f = await fixture(t, () => { calls++; return json({ error: { code: "rate", type: "rate_limit_error", message: KEY } }, 429, { "retry-after": "2", "apim-request-id": "safe-id", "x-private": KEY }); });
   const res = await f.post(); assert.equal(res.status, 429); assert.equal(res.headers.get("retry-after"), "2"); assert.equal(res.headers.get("apim-request-id"), "safe-id"); assert.equal(res.headers.get("x-private"), null); assert.equal((await res.json()).error.message, "[redacted]"); assert.equal(calls, 1);
 });
+test("native HTTP error logs carry the provider code only when it is a safe bounded token", { timeout: 5000 }, async t => {
+  let status = 429, error; const f = await fixture(t, () => json({ error }, status));
+  for (const [nextStatus, source, expected] of [
+    [429, { code: "rate_limit_exceeded", type: "rate_limit_error", message: "slow down" }, "rate_limit_exceeded"],
+    [429, { code: "not a token", message: "slow down" }, "429"],
+    [400, { message: "slow down" }, "400"],
+    [429, { code: KEY, message: "slow down" }, "429"],
+  ]) {
+    status = nextStatus; error = source; const res = await f.post(); assert.equal(res.status, nextStatus); await res.text();
+    const record = f.logs.at(-1); assert.equal(record.outcome, "upstream_http_error"); assert.equal(record.code, expected);
+    assert.equal(JSON.stringify(record).includes(KEY), false);
+  }
+});
 test("midstream corruption and terminal-less EOF send one bridge.error, safe code and byte metrics", { timeout: 5000 }, async t => {
   let calls = 0, raw = "event: response.output_text.delta\ndata: {bad}\n\n";
   const f = await fixture(t, () => { calls++; return sse(raw); });

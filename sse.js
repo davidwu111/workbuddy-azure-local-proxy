@@ -1,5 +1,6 @@
 "use strict";
 const { extractResponse } = require("./adapter");
+const { CHAT_NOOP_EVENTS, CHAT_SUPPRESSED_EVENTS } = require("./native-events");
 function upstreamSourceError(source, fallback = "Upstream response failed") {
   return Object.assign(transportError(typeof source?.code === "string" ? source.code : "upstream_stream_error", typeof source?.message === "string" ? source.message : fallback),
     { type: typeof source?.type === "string" ? source.type : "upstream_error", param: source?.param });
@@ -154,11 +155,6 @@ class SseWriter {
     } catch { this.res.destroy(); }
   }
 }
-const NOOP_EVENTS = new Set(["response.content_part.added", "response.content_part.done", "response.output_text.done", "response.refusal.done", "response.reasoning_summary_part.added", "response.reasoning_summary_part.done", "response.reasoning_summary_text.done", "response.output_text.annotation.added"]);
-// Raw reasoning is intentionally not surfaced. Unlike NOOP_EVENTS these payloads
-// are validated (a malformed string still fails) and then discarded: their text
-// is never emitted as Chat content or reasoning_content, retained, or logged.
-const SUPPRESSED_RAW_REASONING_EVENTS = new Set(["response.reasoning_text.delta", "response.reasoning_text.done"]);
 const SAFE_EVENT_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 function boundedEventName(name, secrets = []) {
   return typeof name === "string" && SAFE_EVENT_NAME.test(name) && !secrets.some(secret => typeof secret === "string" && secret && name.includes(secret)) ? name : undefined;
@@ -210,7 +206,7 @@ async function streamResponse(upstream, writer, { alias, limits, timeouts, signa
         }
         // A queued notification establishes identity only: no Chat role chunk and no terminal outcome.
         if (name === "response.created") await role();
-      } else if (SUPPRESSED_RAW_REASONING_EVENTS.has(name)) {
+      } else if (CHAT_SUPPRESSED_EVENTS.has(name)) {
         const field = name.endsWith(".delta") ? "delta" : "text";
         if (typeof payload[field] !== "string") throw transportError("invalid_sse_reasoning_text", "Upstream SSE raw reasoning text must be a string");
         // Intentionally discarded: raw reasoning never becomes Chat content, reasoning_content, or a log field.
@@ -275,10 +271,10 @@ async function streamResponse(upstream, writer, { alias, limits, timeouts, signa
         if (includeUsage && mapped.usage) frames.push(chunk(null, null, mapped.usage));
         await writer.finish(frames);
         const finishReason = mapped.choices[0].finish_reason;
-        const outcome = finishReason === "length" ? "incomplete" : finishReason === "content_filter" ? "content_filter" : mapped.bridge_warnings ? "partial" : "completed";
+        const outcome = finishReason === "length" ? "incomplete" : finishReason === "content_filter" ? "content_filter" : mapped.bridge_warnings?.includes("suppressed_invalid_or_incomplete_tool_calls") ? "partial" : "completed";
         return { outcome, finishReason, usage: mapped.usage, rawUsage: response.usage };
       } else if (name === "error") throw upstreamSourceError(payload.error || payload);
-      else if (!NOOP_EVENTS.has(name)) throw transportError("unsupported_sse_event", "Upstream SSE event is unsupported");
+      else if (!CHAT_NOOP_EVENTS.has(name)) throw transportError("unsupported_sse_event", "Upstream SSE event is unsupported");
     } catch (error) {
       // Bound the diagnostic name only; never attach payload, text, or provider data.
       throw withEventName(error, name, secrets);

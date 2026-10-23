@@ -6,10 +6,10 @@
 
 The pure [event registry](<../native-events.js>) exports:
 
-- `REGISTRY_VERSION`: endpoint-specific Azure enum snapshot, reviewed 2026-10-22.
 - `EVENT_REGISTRY`: null-prototype, deeply frozen descriptors for exactly 53 documented names, their categories, required transport fields and feature-gate hints.
 - `COMPATIBILITY_EVENTS`: separate `response.cancelled` handling; this does not assert Azure documents/emits that event.
 - `FEATURE_CATEGORIES`: the seven specialized feature groups comprising 29 events.
+- `chatPolicyForEvent(name)`, `CHAT_NOOP_EVENTS`, `CHAT_SUPPRESSED_EVENTS`: the Chat classification derived from registry categories, so the policy has one source of truth. The Azure enum snapshot date (2026-10-22) is recorded in the module header.
 - `validateNativeEvent(name, payload)`: typed-object and known transport-field validation; valid future types remain nonterminal and opaque.
 
 The [native transport](<../native-sse.js>) exports `DEFAULT_LIMITS`, `DEFAULT_TIMEOUTS`, `parseNativeSse`, `createNativeTracker`, `validateRecord`, `encodeRecord`, `NativeSseWriter`, `relayNativeSse`, `boundedLocalError`, and `redactNativeErrorRecord`.

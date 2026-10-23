@@ -37,6 +37,8 @@ function validateListenerTls(config) {
 }
 function requestError(code, message, status) { return Object.assign(transportError(code, message, status), { type: "invalid_request_error", param: "body" }); }
 const SAFE_HEADERS = ["retry-after", "retry-after-ms", "x-ms-retry-after-ms", "x-request-id", "request-id", "apim-request-id"];
+// Retry advice only makes sense on a failed response; success would imply a retry.
+const RETRY_HEADERS = new Set(["retry-after", "retry-after-ms", "x-ms-retry-after-ms"]);
 function sendJson(res, status, value) {
   if (res.headersSent || res.destroyed || res.writableEnded) return;
   const body = JSON.stringify(value);
@@ -69,8 +71,9 @@ function readRequest(req, { signal, maxBytes, uploadMs }) {
     timer = setTimeout(() => finish(reject, transportError("upload_timeout", "Request upload timed out", 408)), uploadMs);
   });
 }
-function safeHeaders(upstream, res, secrets) {
+function safeHeaders(upstream, res, secrets, status) {
   for (const name of SAFE_HEADERS) {
+    if (status < 400 && RETRY_HEADERS.has(name)) continue;
     const value = upstream.headers.get(name);
     if (!value || value.length > 128 || /[\r\n\0]/.test(value) || secrets.some(secret => value.includes(secret))) continue;
     if (name === "retry-after") { if (!/^\d{1,10}$/.test(value) && !Number.isFinite(Date.parse(value))) continue; }
@@ -185,12 +188,13 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       fetchPromise.then(value => { if (controller.signal.aborted) { try { Promise.resolve(value?.body?.cancel()).catch(() => {}); } catch {} } }, () => {});
       upstream = await waitWithTimeout(fetchPromise, { signal: controller.signal, timeoutMs: config.timeouts.upstreamIdleMs });
       if (!upstream || !Number.isInteger(upstream.status) || !upstream.headers?.get || upstream.redirected || upstream.status >= 300 && upstream.status < 400) throw transportError("invalid_upstream_response", "Upstream redirect or response shape is invalid");
-      safeHeaders(upstream, res, [config.azureApiKey, config.proxyToken]); upstreamRequestId = safeToken(upstream.headers.get("apim-request-id") || upstream.headers.get("x-request-id") || upstream.headers.get("request-id"));
+      safeHeaders(upstream, res, [config.azureApiKey, config.proxyToken], upstream.status); upstreamRequestId = safeToken(upstream.headers.get("apim-request-id") || upstream.headers.get("x-request-id") || upstream.headers.get("request-id"));
       const mime = (upstream.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
       const read = maxBytes => readBoundedBody(upstream.body, { signal: controller.signal, idleMs: config.timeouts.upstreamIdleMs, maxBytes: Math.min(maxBytes, config.limits.responseBytes) });
       if (upstream.status < 200 || upstream.status >= 300) {
         const raw = await read(config.limits.errorBytes); let error = { message: `Upstream returned HTTP ${upstream.status}`, code: String(upstream.status), type: "upstream_error" };
         if (mime === "application/json") { try { const source = JSON.parse(raw)?.error; if (source && typeof source === "object") error = { ...error, message: typeof source.message === "string" ? source.message : error.message, type: source.type, code: source.code ?? error.code, param: source.param }; } catch {} }
+        if (nativeMode) nativeCode = safeToken(String(error.code ?? upstream.status), String(upstream.status));
         outcome = "upstream_http_error"; sendJson(res, upstream.status >= 400 && upstream.status <= 599 ? upstream.status : 502, envelope(error)); return;
       }
       if (upstream.status !== 200) throw transportError("invalid_upstream_status", "Upstream success status must be 200");
@@ -240,7 +244,7 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       usage = response?.usage; validateTools(response, payload); const mapped = extractResponse(response, alias);
       if (Buffer.byteLength(JSON.stringify(mapped)) > config.limits.responseBytes) throw transportError("downstream_response_too_large", "Encoded response exceeds configured byte limit");
       finishReason = mapped.choices[0].finish_reason;
-      outcome = finishReason === "length" ? "incomplete" : finishReason === "content_filter" ? "content_filter" : mapped.bridge_warnings ? "partial" : "completed";
+      outcome = finishReason === "length" ? "incomplete" : finishReason === "content_filter" ? "content_filter" : mapped.bridge_warnings?.includes("suppressed_invalid_or_incomplete_tool_calls") ? "partial" : "completed";
       firstTokenMs = Date.now() - started; sendJson(res, 200, mapped);
     } catch (error) {
       validation = validationDiagnostics(error, stage, body, [config.azureApiKey, config.proxyToken]);
@@ -266,7 +270,9 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
         effort: payload?.reasoning?.effort, mode: payload?.reasoning?.mode, context: payload?.reasoning?.context, latencyMs: Date.now() - started, firstTokenMs, usage, normalizedFields, finishReason, stage, bytesOut, queuedFor, ...validation });
     }
   });
-  server.requestTimeout = config.timeouts.uploadMs; server.headersTimeout = Math.min(config.timeouts.uploadMs, 60000); server.keepAliveTimeout = 5000;
+  // A request may wait out the admission budget before its body is read, so the
+  // server deadline must cover queue wait plus upload rather than upload alone.
+  server.requestTimeout = Math.min(config.timeouts.capacityWaitMs + config.timeouts.uploadMs, 86400000); server.headersTimeout = Math.min(config.timeouts.uploadMs, 60000); server.keepAliveTimeout = 5000;
   server.on("connection", socket => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
   server.shutdown = () => {
     if (shutdownPromise) return shutdownPromise;

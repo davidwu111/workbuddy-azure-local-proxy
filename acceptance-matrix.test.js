@@ -7,6 +7,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const inventory = require("./test-fixtures/azure-responses/event-inventory.json");
+const { EVENT_REGISTRY, chatPolicyForEvent } = require("./native-events");
 const { SseWriter, streamResponse } = require("./sse");
 
 const LIMITS = Object.freeze({
@@ -544,6 +545,25 @@ test("event inventory has exactly 53 entries with recognized Chat policies and e
   assert.equal(inventory.counts.currentChatSuppressedRawReasoningDocumentedEvents, EXPECTED_COUNTS.suppressed);
   assert.equal(inventory.counts.currentChatLifecycleNotificationDocumentedEvents, EXPECTED_COUNTS.lifecycle);
   assert.equal(inventory.counts.currentChatRejectedDocumentedEvents, EXPECTED_COUNTS.rejected);
+});
+
+test("event inventory matches the authoritative native-event registry", () => {
+  assert.deepEqual(
+    inventory.entries.map((entry) => entry.name).sort(),
+    Object.keys(EVENT_REGISTRY).sort(),
+    "fixture event names must equal the native event registry keys"
+  );
+
+  for (const entry of inventory.entries) {
+    assert.ok(EVENT_REGISTRY[entry.name], `${entry.name} is listed in the fixture but missing from EVENT_REGISTRY`);
+    assert.equal(EVENT_REGISTRY[entry.name].category, entry.category, `${entry.name} category drifted from EVENT_REGISTRY`);
+    assert.equal(chatPolicyForEvent(entry.name), entry.currentChatPolicy, `${entry.name} Chat policy drifted from the registry-derived policy`);
+  }
+
+  for (const entry of inventory.extraCompatibilityNames) {
+    assert.equal(Object.hasOwn(EVENT_REGISTRY, entry.name), false, `${entry.name} is compatibility-only and must not be in EVENT_REGISTRY`);
+    assert.equal(chatPolicyForEvent(entry.name), entry.currentChatPolicy, `${entry.name} compatibility Chat policy drifted from the registry-derived policy`);
+  }
 });
 
 test("Chat acceptance matrix drives every documented event through streamResponse", async (t) => {

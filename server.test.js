@@ -48,6 +48,16 @@ test("factory is explicit, defaults to loopback, health/readiness identify build
   assert.throws(() => createBridgeServer({ azureBase: "http://127.0.0.1" }), /test seam|HTTPS|origin/);
 });
 
+test("server request deadline covers admission wait plus upload for default and custom budgets", { timeout: 5000 }, () => {
+  const raw = timeouts => ({ azureBase: "https://example.invalid", approvedOrigins: ["https://example.invalid"], azureApiKey: UPSTREAM_KEY, proxyToken: LOCAL_TOKEN,
+    defaultModel: "local", models: { local: { deployment: "fixture-deployment", variant: "gpt-6-luna", version: "fixture-version" } }, ...(timeouts ? { timeouts } : {}) });
+  // Defaults: capacityWaitMs 30000 + uploadMs 30000.
+  assert.equal(createBridgeServer(raw()).requestTimeout, 60000);
+  const custom = createBridgeServer(raw({ capacityWaitMs: 5000, uploadMs: 2000 }));
+  assert.equal(custom.requestTimeout, 7000);
+  assert.equal(custom.headersTimeout, 2000); assert.equal(custom.keepAliveTimeout, 5000);
+});
+
 test("auth, unknown aliases, unsupported controls, invalid MIME/JSON and budgets never forward", { timeout: 5000 }, async t => {
   let calls = 0; const f = await fixture(t, () => { calls++; return json(completed()); });
   for (const [value, options, status] of [[body(), { headers: { Authorization: "Bearer wrong" } }, 401], [body({ model: "unknown" }), {}, 400], [body({ n: 2 }), {}, 400], [body({ max_tokens: 0 }), {}, 400], [body(), { headers: { "Content-Type": "text/plain" } }, 415], [body(), { raw: "{" }, 400]]) {
@@ -222,6 +232,18 @@ test("safe retry/correlation headers and errors preserve advice but never known 
   const malicious = await f.post(); await malicious.text();
   assert.equal(malicious.headers.get("apim-request-id"), null); assert.equal(malicious.headers.get("request-id"), null);
   assert.equal(JSON.stringify(f.logs).includes(UPSTREAM_KEY), false); assert.equal(JSON.stringify(f.logs).includes(LOCAL_TOKEN), false);
+});
+
+test("retry advice is copied only on error responses while correlation ids survive success", { timeout: 5000 }, async t => {
+  let responder = () => json(completed(), { headers: { "retry-after": "5", "retry-after-ms": "10", "x-ms-retry-after-ms": "10", "apim-request-id": "safe-request" } });
+  const f = await fixture(t, () => responder());
+  const ok = await f.post(); await ok.text();
+  assert.equal(ok.status, 200);
+  for (const name of ["retry-after", "retry-after-ms", "x-ms-retry-after-ms"]) assert.equal(ok.headers.get(name), null);
+  assert.equal(ok.headers.get("apim-request-id"), "safe-request");
+  responder = () => json({ error: { message: "rate limited", code: "rate_limited" } }, { status: 429, headers: { "retry-after": "5", "retry-after-ms": "10", "x-ms-retry-after-ms": "10" } });
+  const limited = await f.post(); await limited.text();
+  assert.equal(limited.status, 429); assert.equal(limited.headers.get("retry-after"), "5"); assert.equal(limited.headers.get("retry-after-ms"), "10"); assert.equal(limited.headers.get("x-ms-retry-after-ms"), "10");
 });
 
 test("rejected upstream MIME/status bodies are explicitly cancelled even when injection ignores abort", { timeout: 5000 }, async t => {

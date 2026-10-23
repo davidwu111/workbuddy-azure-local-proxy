@@ -1,0 +1,11 @@
+{
+  "name": "azure-responses-bridge",
+  "private": true,
+  "description": "Stateless Chat Completions to Azure Responses bridge with an opt-in native Responses route.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

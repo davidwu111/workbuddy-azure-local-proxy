@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { isIP } = require("node:net");
-const { WORKBUDDY_MESSAGE_FIELDS, validateClientMetadataFieldName } = require("./chat-contract");
+const { WORKBUDDY_MESSAGE_FIELDS, CLIENT_METADATA_MODES, validateClientMetadataFieldName } = require("./chat-contract");
 const { normalizeNativePolicies } = require("./native-permissions");
 const VARIANTS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
 const EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
@@ -103,6 +103,10 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   config.defaultModel = nonempty(raw.defaultModel, "defaultModel", 128);
   if (!Object.hasOwn(config.models, config.defaultModel)) fail("defaultModel", "must identify a permitted alias");
   config.nativePolicies = normalizeNativePolicies(raw.nativePolicies ?? Object.create(null), Object.keys(config.models));
+  // Chat gates images on the route profile while native gates them on the policy grant; both must agree.
+  for (const alias of Object.keys(config.models)) {
+    if (config.nativePolicies[alias].features.includes("image-input") && config.models[alias].profile.images !== true) fail(`nativePolicies.${alias}.features`, "image-input requires profile.images=true for the same alias");
+  }
   config.maxOutputTokens = positive(raw.maxOutputTokens ?? 128000, "maxOutputTokens", 128000);
   // Clients that omit a budget inherit the ceiling unless the operator sets a separate default.
   config.defaultMaxOutputTokens = positive(raw.defaultMaxOutputTokens ?? config.maxOutputTokens, "defaultMaxOutputTokens", 128000);
@@ -126,7 +130,7 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   // "strict" accepts only the listed message metadata. "auto" additionally
   // ignores any other non-standard message-level key after bounded validation;
   // reserved/standard message fields and unknown top-level fields still fail.
-  config.clientMetadataMode = enumValue(raw.clientMetadataMode ?? "auto", ["strict", "auto"], "clientMetadataMode");
+  config.clientMetadataMode = enumValue(raw.clientMetadataMode ?? "auto", CLIENT_METADATA_MODES, "clientMetadataMode");
   config.defaults = { store: false, ...object(raw.defaults ?? {}, "defaults") };
   keys(config.defaults, ["store", "reasoningEffort", "reasoningMode", "reasoningContext", "cacheKey", "cacheOptions"], "defaults");
   bool(config.defaults.store, "defaults.store");

@@ -115,6 +115,12 @@ test("storage cache defaults and diagnostic identity are safe and deliberate", (
   assert.throws(() => loadConfig({ env: env({ BRIDGE_NATIVE_RESPONSES: "yes" }) }), /BRIDGE_NATIVE_RESPONSES/);
   assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ samplingPolicy: "drop-defaults" })).configId);
 });
+test("native image input requires the same alias to enable Chat image capability", () => {
+  const grant = { nativePolicies: { local: { features: ["image-input"] } } };
+  assert.throws(() => validateConfig(raw(grant)), { code: "INVALID_CONFIG", param: "nativePolicies.local.features" });
+  const images = { deployment: "arbitrary-deployment", variant: "gpt-6-luna", version: "fixture-version", profile: { images: true } };
+  assert.deepEqual(validateConfig(raw({ ...grant, models: { local: images } })).nativePolicies.local.features, ["image-input"]);
+});
 test("localhost HTTP requires an explicit isolated seam", () => {
   const mock = raw({ azureBase: "http://127.0.0.1:1234", approvedOrigins: ["http://127.0.0.1:1234"] });
   assert.throws(() => validateConfig(mock), /HTTPS/);

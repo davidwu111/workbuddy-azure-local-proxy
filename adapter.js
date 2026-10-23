@@ -706,6 +706,9 @@ function extractResponse(response, alias) {
     }
   }
   const calls = outcome.allowToolCalls ? validCalls(response) : [];
+  // Refusal text fills content only when no ordinary text exists. Flag the fallback so a
+  // client that renders content can tell a refusal apart from normal assistant output.
+  const refusalContentFallback = text.length === 0 && refusals.length > 0;
   const message = { role: "assistant", content: text.length ? text.join("") : refusals.length ? refusals.join("") : null };
   if (refusals.length) message.refusal = refusals.join("");
   if (reasoning.length) message.reasoning_content = reasoning.join("");
@@ -721,7 +724,10 @@ function extractResponse(response, alias) {
     ...(usage !== undefined ? { usage } : {}),
   };
   if (own(response, "content_filters")) result.azure_content_filters = response.content_filters === null ? null : safeContentFilters(response.content_filters);
-  if (outcome.suppressedToolCalls) result.bridge_warnings = ["suppressed_invalid_or_incomplete_tool_calls"];
+  const warnings = [];
+  if (outcome.suppressedToolCalls) warnings.push("suppressed_invalid_or_incomplete_tool_calls");
+  if (refusalContentFallback) warnings.push("refusal_content_fallback");
+  if (warnings.length) result.bridge_warnings = warnings;
   return result;
 }
 

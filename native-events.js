@@ -1,7 +1,6 @@
 "use strict";
 
-// Endpoint-specific schema snapshot. Never load fixtures/configuration at runtime.
-const REGISTRY_VERSION = "azure-openai-responses-enum-2026-10-22";
+// Endpoint-specific schema snapshot (2026-10-22). Never load fixtures/configuration at runtime.
 const groups = {
   audio: ["response.audio.delta", "response.audio.done", "response.audio.transcript.delta", "response.audio.transcript.done"],
   "code-interpreter": ["response.code_interpreter_call_code.delta", "response.code_interpreter_call_code.done", "response.code_interpreter_call.completed", "response.code_interpreter_call.in_progress", "response.code_interpreter_call.interpreting"],
@@ -71,6 +70,25 @@ const EVENT_REGISTRY = Object.freeze(registry);
 const COMPATIBILITY_EVENTS = Object.freeze(Object.assign(Object.create(null), {
   "response.cancelled": Object.freeze({ name: "response.cancelled", category: "bridge-compatibility-only", inDocumentedEnum: false, fields: Object.freeze({ type: "string", response: "object" }) }),
 }));
+// Chat policy is derived from the registry category so the event inventory has one source of truth.
+// Only these categories are mapped; a future or unknown category fails closed as rejected.
+const CHAT_MAPPED_CATEGORIES = Object.freeze(["lifecycle", "lifecycle-terminal", "error", "output-item-lifecycle", "function-tool", "bridge-compatibility-only"]);
+function chatPolicyForEvent(name) {
+  const entry = EVENT_REGISTRY[name] || COMPATIBILITY_EVENTS[name];
+  if (!entry) return "rejected";
+  const { category } = entry;
+  if (category === "lifecycle-queued") return "lifecycle";
+  if (category === "message-content-lifecycle" || category === "annotation") return "noop";
+  if (category === "raw-reasoning") return "suppressed";
+  if (category === "output-text" || category === "refusal" || category === "reasoning-summary") return name.endsWith(".delta") ? "mapped" : "noop";
+  return CHAT_MAPPED_CATEGORIES.includes(category) ? "mapped" : "rejected";
+}
+const chatEventsWithPolicy = policy => new Set(Object.keys(EVENT_REGISTRY).filter(name => chatPolicyForEvent(name) === policy));
+const CHAT_NOOP_EVENTS = chatEventsWithPolicy("noop");
+// Raw reasoning is intentionally not surfaced. Unlike CHAT_NOOP_EVENTS these payloads
+// are validated (a malformed string still fails) and then discarded: their text
+// is never emitted as Chat content or reasoning_content, retained, or logged.
+const CHAT_SUPPRESSED_EVENTS = chatEventsWithPolicy("suppressed");
 function invalid() {
   return Object.assign(new Error("Native event shape is invalid"), { code: "invalid_native_shape", status: 502, type: "upstream_error" });
 }
@@ -123,4 +141,4 @@ function validateNativeEvent(name, payload) {
   const terminal = ["response.completed", "response.failed", "response.incomplete", "response.cancelled", "error"].includes(name);
   return { known: true, terminal, category: entry.category };
 }
-module.exports = { REGISTRY_VERSION, EVENT_REGISTRY, COMPATIBILITY_EVENTS, FEATURE_CATEGORIES, validateNativeEvent };
+module.exports = { EVENT_REGISTRY, COMPATIBILITY_EVENTS, FEATURE_CATEGORIES, chatPolicyForEvent, CHAT_NOOP_EVENTS, CHAT_SUPPRESSED_EVENTS, validateNativeEvent };
