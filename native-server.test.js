@@ -231,3 +231,18 @@ test("native create uses the existing TLS listener with real certificate verific
   });
   assert.equal(response.status, 200); assert.equal(JSON.parse(response.data).model, "provider-model");
 });
+test("encrypted reasoning and logprobs are forwarded and relayed unchanged", { timeout: 5000 }, async t => {
+  const reasoning = { type: "reasoning", id: "rs_1", encrypted_content: "gAAAA-blob", summary: [] };
+  const message = { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: [], logprobs: [{ token: "hi", logprob: -0.25 }] }] };
+  const response = { id: "r", status: "completed", output: [reasoning, message], usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } };
+  const raw = event("response.created", 1, { response: { id: "r", status: "in_progress", output: [] } })
+    + event("response.output_item.done", 2, { output_index: 0, item: reasoning })
+    + event("response.output_text.delta", 3, { item_id: "msg_1", output_index: 1, content_index: 0, delta: "hi", logprobs: [{ token: "hi", logprob: -0.25 }] })
+    + event("response.completed", 4, { response });
+  let sent; const f = await fixture(t, (_url, opts) => { sent = JSON.parse(opts.body); return sse(raw); });
+  const res = await f.post({ input: "hi", stream: true, include: ["reasoning.encrypted_content", "message.output_text.logprobs"], top_logprobs: 2 });
+  const text = await res.text();
+  assert.deepEqual(sent.include, ["reasoning.encrypted_content", "message.output_text.logprobs"]); assert.equal(sent.top_logprobs, 2);
+  assert.equal(res.status, 200); assert.ok(text.includes("gAAAA-blob")); assert.ok(text.includes('"logprob":-0.25'));
+  assert.deepEqual(records(text).at(-1).response, response); assert.ok(!text.includes("[DONE]"));
+});

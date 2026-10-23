@@ -17,7 +17,37 @@ Requests require bounded UTF-8 JSON and `Content-Type: application/json`. The [p
 - `input`: text string, typed or shorthand text messages, or fully replayed native function call/results. Preserve role, content order, optional message IDs/status and assistant `phase`; do not infer or reorder phases. Empty `input` (`[]` or `""`) is rejected locally with `invalid_parameter`; whitespace-only strings remain valid.
 - User/system/developer blocks use `input_text`. Assistant replay can contain `input_text`, `output_text` (including existing annotations/logprobs), or the native `{type:"refusal",refusal:"..."}` block. Image/file input content requires the corresponding feature and exact approved URL/file ID or bounded inline data; arbitrary fetching is not available. See [feature policy](<native-feature-permissions.md>).
 - Replayed `function_call` and `function_call_output` keep native IDs/names/argument/result strings. Each result must match an unresolved earlier call in the supplied array, call IDs must be unique, and no call may remain unresolved at the end. No remote state or global conversation history is consulted.
-- `instructions`, `stream`, `max_output_tokens`, `reasoning`, `tools`, `tool_choice`, `parallel_tool_calls`, `text`, and inert `store`/`background` settings form the initial top-level allowlist. Unknown fields fail locally; exact inert defaults (`metadata:{}`, `include:[]`, `truncation:"disabled"`, `top_logprobs:0`, `service_tier:"auto"`, `temperature:1`, `top_p:1`) are dropped instead, `parallel_tool_calls:null` and `text:{}` are omitted from the outbound payload, and every other recognized but deferred value is unsupported rather than silently forwarded.
+
+Top-level fields are enumerated below. Unknown fields fail locally; exact inert defaults (`metadata:{}`, `include:[]`, `truncation:"disabled"`, `top_logprobs:0`, `service_tier:"auto"`, `temperature:1`, `top_p:1`) are dropped instead, `parallel_tool_calls:null` and `text:{}` are omitted from the outbound payload, and every other recognized but deferred value is unsupported rather than silently forwarded. Every field added in this revision is nullable: `null` means unset and is never forwarded, except `prompt_cache_key` and `prompt_cache_options`, where an explicit `null` clears the operator default instead of inheriting it.
+
+| Field | Rule | Forwarded |
+|---|---|---|
+| `model` | Configured alias; absent selects the default alias. Unknown aliases are rejected locally. | Resolved to the route deployment |
+| `input` | Text string, typed or shorthand messages, or replayed native function calls/results. Empty `[]` or `""` is rejected. | Yes |
+| `instructions` | Instruction-role handling governed by `BRIDGE_INSTRUCTION_POLICY`. | Yes |
+| `stream` | Boolean; nullable stream defaults to nonstream. | Yes |
+| `max_output_tokens` | Explicit positive client value within the ceiling; otherwise the operator's default budget. | Yes |
+| `reasoning` | `effort`, `mode`, `context` and `summary` checked against the selected profile. | Yes |
+| `tools` | Native function definitions and granted custom tools; syntax, uniqueness and schema shape checked. | Yes |
+| `tool_choice` | `auto`, `none`, `required`, `{type:"function",name}`, or a granted `{type:"custom",name}`. | Yes |
+| `parallel_tool_calls` | Boolean; applicability no-op without tools. | Yes when not `null` |
+| `text` | `format` and profile-supported `verbosity`; `{}` is omitted. | Yes |
+| `store` | False unless global `allowStore`, the route's `nativePolicies[alias].allowStore` and request `store:true` all agree. | Yes, as resolved false/true |
+| `background` | False/null only; `true` remains blocked. | Resolved false only |
+| `prompt_cache_key` | Non-secret identifier, 1-128 characters matching `[a-zA-Z0-9][a-zA-Z0-9._:-]*`. Falls back to `BRIDGE_PROMPT_CACHE_KEY` when omitted. | Yes; an explicit value overrides the configured default |
+| `prompt_cache_options` | `{mode?: "implicit"\|"explicit", ttl?: "30m"}`. `mode:"explicit"` is rejected on PTU-M deployments. Falls back to `BRIDGE_PROMPT_CACHE_OPTIONS`. | Yes |
+| `prompt_cache_retention` | `"in_memory"` or `"24h"`. | Yes |
+| `temperature` | Validated against the route profile's `samplingEfforts` at the effective reasoning effort. An exact `1` is the documented default and is dropped before that check, so it never fails. | Yes when non-default and the profile allows sampling at that effort |
+| `top_p` | Validated against the route profile's `samplingEfforts` at the effective reasoning effort. An exact `1` is the documented default and is dropped before that check, so it never fails. | Yes when non-default and the profile allows sampling at that effort |
+| `include` | At most 16 unique values from `reasoning.encrypted_content`, `message.output_text.logprobs`, `file_search_call.results`, `code_interpreter_call.outputs`, `image_generation_call.result`, `web_search_call.action.sources`. A tool-scoped value requires that tool to be declared on the same request. Unknown values are `unsupported_parameter`. | Yes |
+| `top_logprobs` | Integer 1-20; requires `include` to contain `message.output_text.logprobs`. An exact `0` is the default and is dropped. | Yes |
+| `metadata` | At most 16 entries, keys up to 64 characters, string values up to 512 characters; forwarded verbatim. | Yes |
+| `safety_identifier` | Up to 128 characters. | Yes |
+| `user` | Up to 512 characters. | Yes |
+| `max_tool_calls` | Integer 1-1000. | Yes |
+| `service_tier` | One of `default`, `flex`, `scale`, `priority`, `fast`; `auto` is the default and is dropped. | Yes when not `auto` |
+| `truncation` | `auto` only; `disabled` is the default and is dropped. | Yes for `auto` |
+
 - `max_output_tokens` precedence is the explicit positive client value, which is rejected rather than clamped if above the ceiling; otherwise `BRIDGE_DEFAULT_MAX_OUTPUT_TOKENS` applies, itself capped by the minimum of the global and route-profile caps. Nullable/unset budgets still receive the operator's finite budget, and the default never raises a route's profile cap.
 - Native instruction handling follows `BRIDGE_INSTRUCTION_POLICY` with the same semantics as the Chat route: `reject-mixed` (startup default) fails on a system+developer mix, `developer`/`system` rewrite the instruction role, and `preserve` keeps both.
 - Native reasoning effort/mode/context are checked against the selected profile; configured global/profile defaults apply when absent. Explicit supported values and `summary:auto|concise|detailed` are preserved. A disallowed effort is rejected, not replaced.
@@ -25,6 +55,9 @@ Requests require bounded UTF-8 JSON and `Content-Type: application/json`. The [p
 - Named native tool choice is **`{type:"function",name:"lookup"}`**, not Chat's nested `function` object. `auto`, `none`, and `required` are supported; forced names must be declared and `required` needs tools.
 - `text.format` supports `text`, `json_object`, or checked root-object `json_schema`; profile-supported verbosity is preserved.
 - `store` is false unless global `allowStore`, route `nativePolicies[alias].allowStore`, and explicit request `store:true` all agree. Missing/false/null stays false; Chat storage defaults are independent. `background:true` remains blocked. Nullable stream defaults to nonstream.
+- `include:["reasoning.encrypted_content"]` makes the provider return reasoning items carrying `encrypted_content`. The bridge relays those items unchanged; it never parses, logs or persists them. `reasoning_text` deltas remain suppressed on the Chat route.
+- `prompt_cache_breakpoint` on an `input_text` content part accepts only `{mode:"explicit"}`; it requires the route profile to enable `cacheBreakpoints` and is rejected on PTU-M.
+- `prompt` stays deferred: it selects a provider-side prompt template, which is a resource identity like a file or vector-store ID and therefore needs its own grant.
 
 Example shape (use an approved alias and your local token; this document does not authorize a live call):
 

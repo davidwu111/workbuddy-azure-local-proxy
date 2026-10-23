@@ -16,6 +16,8 @@ two results are not directly comparable in count.
 | Node **v22.22.2**, `node --test *.test.js` | 343 | 339 | 0 / 0 / 4 | 8.3 s |
 | Node **v24.14.0**, after the Phase 1-2 fixes | 358 | 354 | 0 / 0 / 4 | 8.4 s |
 | Node **v22.22.2**, after the Phase 1-2 fixes | 358 | 354 | 0 / 0 / 4 | 8.6 s |
+| Node **v24.14.0**, after the Phase 3A fixes | 370 | 366 | 0 / 0 / 4 | 8.5 s |
+| Node **v22.22.2**, after the Phase 3A fixes | 370 | 366 | 0 / 0 / 4 | 8.7 s |
 
 The four skips are the Linux-only cases in
 [bridge.linux.test.js](<../bridge.linux.test.js>), so these Windows runs do not

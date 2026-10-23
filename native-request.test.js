@@ -33,12 +33,94 @@ test("native booleans and nullable inert defaults are explicit and storage stays
   assert.throws(() => validateNativeRequest({ input: "x", store: true }, config({ nativePolicies: { local: { allowStore: true } } })), { code: "unsupported_parameter", param: "store" });
   for (const key of ["stream", "store", "background", "parallel_tool_calls"]) assert.throws(() => validateNativeRequest({ input: "x", [key]: "false" }, config()), { code: "invalid_parameter" });
 });
-test("inert deferred defaults are accepted and dropped while every non-default value stays unsupported", () => {
+test("inert deferred defaults are accepted and dropped while unsupported shapes still fail", () => {
   const inert = { metadata: {}, include: [], truncation: "disabled", top_logprobs: 0, service_tier: "auto", temperature: 1, top_p: 1 };
   const r = validateNativeRequest({ input: "x", ...inert }, config());
   for (const key of Object.keys(inert)) assert.equal(Object.hasOwn(r.payload, key), false);
-  const rejected = [["metadata", []], ["metadata", { tenant: "a" }], ["include", {}], ["include", ["file_search_call.results"]], ["truncation", "auto"], ["top_logprobs", 1], ["service_tier", "flex"], ["temperature", 0.5], ["top_p", 0.9]];
-  for (const [key, value] of rejected) assert.throws(() => validateNativeRequest({ input: "x", [key]: value }, config()), { code: "unsupported_parameter", param: key }, `${key}=${JSON.stringify(value)}`);
+  // A non-object metadata fails shape validation; sampling stays unsupported at the default effort.
+  const rejected = [["metadata", [], "invalid_parameter"], ["temperature", 0.5, "unsupported_parameter"], ["top_p", 0.9, "unsupported_parameter"]];
+  for (const [key, value, code] of rejected) assert.throws(() => validateNativeRequest({ input: "x", [key]: value }, config()), { code, param: key }, `${key}=${JSON.stringify(value)}`);
+});
+test("prompt_cache_key requires a bounded identifier and lets the client override the operator default", () => {
+  assert.equal(validateNativeRequest({ input: "x", prompt_cache_key: "tenant-a.cache:1" }, config()).payload.prompt_cache_key, "tenant-a.cache:1");
+  for (const bad of ["", "-leading", "a".repeat(129), 7]) assert.throws(() => validateNativeRequest({ input: "x", prompt_cache_key: bad }, config()), { code: "invalid_parameter", param: "prompt_cache_key" });
+  assert.equal(validateNativeRequest({ input: "x" }, config({ defaults: { cacheKey: "operator-cache" } })).payload.prompt_cache_key, "operator-cache");
+  assert.equal(validateNativeRequest({ input: "x", prompt_cache_key: "client-cache" }, config({ defaults: { cacheKey: "operator-cache" } })).payload.prompt_cache_key, "client-cache");
+  // An explicit null clears operator cache identity instead of inheriting it.
+  const cleared = validateNativeRequest({ input: "x", prompt_cache_key: null, prompt_cache_options: null }, config({ defaults: { cacheKey: "operator-cache", cacheOptions: { mode: "implicit" } } }));
+  assert.equal(Object.hasOwn(cleared.payload, "prompt_cache_key"), false);
+  assert.equal(Object.hasOwn(cleared.payload, "prompt_cache_options"), false);
+  const inherited = validateNativeRequest({ input: "x" }, config({ defaults: { cacheOptions: { mode: "implicit", ttl: "30m" } } }));
+  assert.deepEqual(inherited.payload.prompt_cache_options, { mode: "implicit", ttl: "30m" });
+});
+test("prompt_cache_options and prompt_cache_retention accept only documented cache shapes", () => {
+  assert.deepEqual(validateNativeRequest({ input: "x", prompt_cache_options: { mode: "explicit" } }, config()).payload.prompt_cache_options, { mode: "explicit" });
+  assert.deepEqual(validateNativeRequest({ input: "x", prompt_cache_options: { ttl: "30m" } }, config()).payload.prompt_cache_options, { ttl: "30m" });
+  assert.throws(() => validateNativeRequest({ input: "x", prompt_cache_options: { mode: "bogus" } }, config()), { code: "invalid_parameter", param: "prompt_cache_options.mode" });
+  assert.throws(() => validateNativeRequest({ input: "x", prompt_cache_options: { ttl: "1h" } }, config()), { code: "invalid_parameter", param: "prompt_cache_options.ttl" });
+  assert.equal(Object.hasOwn(validateNativeRequest({ input: "x", prompt_cache_options: {} }, config()).payload, "prompt_cache_options"), false);
+  const ptu = config({ models: { local: { deployment: "deployment", variant: "gpt-6-luna", version: "v", profile: { deploymentType: "ptu-m" } } } });
+  assert.throws(() => validateNativeRequest({ input: "x", prompt_cache_options: { mode: "explicit" } }, ptu), { code: "unsupported_parameter", param: "prompt_cache_options.mode" });
+  assert.equal(validateNativeRequest({ input: "x", prompt_cache_retention: "24h" }, config()).payload.prompt_cache_retention, "24h");
+  assert.equal(validateNativeRequest({ input: "x", prompt_cache_retention: "in_memory" }, config()).payload.prompt_cache_retention, "in_memory");
+  assert.throws(() => validateNativeRequest({ input: "x", prompt_cache_retention: "1h" }, config()), { code: "invalid_parameter", param: "prompt_cache_retention" });
+});
+test("input_text cache breakpoints need an enabled route profile and are normalized", () => {
+  const body = { input: [{ role: "user", content: [{ type: "input_text", text: "hi", prompt_cache_breakpoint: { mode: "explicit" } }] }] };
+  assert.deepEqual(validateNativeRequest(body, config()).payload.input[0].content[0], { type: "input_text", text: "hi", prompt_cache_breakpoint: { mode: "explicit" } });
+  const path = "input[0].content[0].prompt_cache_breakpoint";
+  assert.throws(() => validateNativeRequest({ input: [{ role: "assistant", content: [{ type: "output_text", text: "hi", prompt_cache_breakpoint: { mode: "explicit" } }] }] }, config()), { code: "unsupported_parameter", param: path });
+  const off = config({ models: { local: { deployment: "deployment", variant: "gpt-6-luna", version: "v", profile: { cacheBreakpoints: false } } } });
+  assert.throws(() => validateNativeRequest(body, off), { code: "unsupported_parameter", param: path });
+  assert.throws(() => validateNativeRequest({ input: [{ role: "user", content: [{ type: "input_text", text: "hi", prompt_cache_breakpoint: { mode: "implicit" } }] }] }, config()), { code: "invalid_parameter", param: `${path}.mode` });
+});
+test("include accepts known values and gates tool-scoped names on declared tools", () => {
+  assert.deepEqual(validateNativeRequest({ input: "x", include: ["reasoning.encrypted_content"] }, config()).payload.include, ["reasoning.encrypted_content"]);
+  assert.deepEqual(validateNativeRequest({ input: "x", include: ["message.output_text.logprobs"] }, config()).payload.include, ["message.output_text.logprobs"]);
+  assert.throws(() => validateNativeRequest({ input: "x", include: ["file_search_call.results"] }, config()), { code: "unsupported_parameter", param: "include" });
+  const search = config({ nativePolicies: { local: { features: ["file-search"], vectorStoreIds: ["vs_1"] } } });
+  assert.deepEqual(validateNativeRequest({ input: "x", include: ["file_search_call.results"], tools: [{ type: "file_search", vector_store_ids: ["vs_1"] }] }, search).payload.include, ["file_search_call.results"]);
+  assert.throws(() => validateNativeRequest({ input: "x", include: ["unknown.value"] }, config()), { code: "unsupported_parameter", param: "include" });
+  for (const bad of [["reasoning.encrypted_content", "reasoning.encrypted_content"], new Array(17).fill("reasoning.encrypted_content"), "reasoning.encrypted_content"]) assert.throws(() => validateNativeRequest({ input: "x", include: bad }, config()), { code: "invalid_parameter", param: "include" });
+});
+test("top_logprobs requires the logprobs include and stays within 1 to 20", () => {
+  assert.equal(validateNativeRequest({ input: "x", top_logprobs: 5, include: ["message.output_text.logprobs"] }, config()).payload.top_logprobs, 5);
+  assert.throws(() => validateNativeRequest({ input: "x", top_logprobs: 5 }, config()), { code: "unsupported_parameter", param: "top_logprobs" });
+  for (const bad of [21, "5"]) assert.throws(() => validateNativeRequest({ input: "x", top_logprobs: bad, include: ["message.output_text.logprobs"] }, config()), { code: "invalid_parameter", param: "top_logprobs" });
+});
+test("metadata is bounded, copied and never forwarded empty or malformed", () => {
+  const r = validateNativeRequest({ input: "x", metadata: { tenant: "a" } }, config());
+  assert.deepEqual(r.payload.metadata, { tenant: "a" });
+  const many = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, "v"]));
+  assert.throws(() => validateNativeRequest({ input: "x", metadata: many }, config()), { code: "invalid_parameter", param: "metadata" });
+  assert.throws(() => validateNativeRequest({ input: "x", metadata: { tenant: 7 } }, config()), { code: "invalid_parameter", param: "metadata.tenant" });
+  assert.throws(() => validateNativeRequest({ input: "x", metadata: { ["k".repeat(65)]: "v" } }, config()), { code: "invalid_parameter", param: "metadata" });
+});
+test("stateless identity fields are bounded and forwarded only when valid", () => {
+  assert.equal(validateNativeRequest({ input: "x", safety_identifier: "a".repeat(128) }, config()).payload.safety_identifier, "a".repeat(128));
+  assert.throws(() => validateNativeRequest({ input: "x", safety_identifier: "a".repeat(129) }, config()), { code: "invalid_parameter", param: "safety_identifier" });
+  assert.throws(() => validateNativeRequest({ input: "x", user: "a".repeat(513) }, config()), { code: "invalid_parameter", param: "user" });
+  assert.equal(validateNativeRequest({ input: "x", max_tool_calls: 5 }, config()).payload.max_tool_calls, 5);
+  for (const bad of [0, 1001]) assert.throws(() => validateNativeRequest({ input: "x", max_tool_calls: bad }, config()), { code: "invalid_parameter", param: "max_tool_calls" });
+});
+test("service_tier and truncation accept only documented non-default values", () => {
+  assert.equal(validateNativeRequest({ input: "x", service_tier: "flex" }, config()).payload.service_tier, "flex");
+  assert.throws(() => validateNativeRequest({ input: "x", service_tier: "bogus" }, config()), { code: "invalid_parameter", param: "service_tier" });
+  assert.equal(validateNativeRequest({ input: "x", truncation: "auto" }, config()).payload.truncation, "auto");
+  assert.throws(() => validateNativeRequest({ input: "x", truncation: "bogus" }, config()), { code: "invalid_parameter", param: "truncation" });
+});
+test("sampling values need an explicit sampling-capable effort", () => {
+  for (const [key, value] of [["temperature", 0.5], ["top_p", 0.9]]) assert.throws(() => validateNativeRequest({ input: "x", [key]: value }, config()), { code: "unsupported_parameter", param: key });
+  const sampling = config({ defaults: { reasoningEffort: "none" } });
+  const r = validateNativeRequest({ input: "x", temperature: 0.5, top_p: 0.9 }, sampling);
+  assert.equal(r.payload.temperature, 0.5); assert.equal(r.payload.top_p, 0.9); assert.equal(r.payload.reasoning.effort, "none");
+});
+test("encrypted reasoning include permits reasoning output items", () => {
+  const p = policy({ include: ["reasoning.encrypted_content"] });
+  assert.equal(inspect(p, "response.completed", { response: parent([{ type: "reasoning", id: "rs_1", encrypted_content: "gAAAAcipher", summary: [] }]) }), true);
+});
+test("prompt template identity stays deferred until it has its own grant", () => {
+  assert.throws(() => validateNativeRequest({ input: "x", prompt: { id: "pmpt_1" } }, config()), { code: "unsupported_parameter", param: "prompt" });
 });
 test("nullable parallel_tool_calls and empty text are accepted but omitted from the payload", () => {
   const bare = validateNativeRequest({ input: "x", parallel_tool_calls: null, text: {} }, config());
@@ -87,7 +169,7 @@ test("hosted/custom tools, media, references, state, connections and unknown fie
   for (const type of ["web_search", "file_search", "code_interpreter", "image_generation", "mcp", "custom", "computer", "azure_function"]) assert.throws(() => validateNativeRequest({ input: "x", tools: [{ type, name: "x", parameters: null }] }, config()), { code: "unsupported_parameter" });
   for (const type of ["input_image", "input_audio", "input_file"]) assert.throws(() => validateNativeRequest({ input: [{ role: "user", content: [{ type, text: "x" }] }] }, config()), { code: "unsupported_parameter" });
   for (const type of ["item_reference", "reasoning", "compaction", "mcp_approval_response"]) assert.throws(() => validateNativeRequest({ input: [{ type, id: "r" }] }, config()), { code: "unsupported_parameter" });
-  for (const key of ["previous_response_id", "conversation", "agent_reference", "agent_session_id", "context_management", "include", "prompt", "metadata", "routing_config", "stream_options"]) assert.throws(() => validateNativeRequest({ input: "x", [key]: null }, config()), { code: "unsupported_parameter", param: key });
+  for (const key of ["previous_response_id", "conversation", "agent_reference", "agent_session_id", "context_management", "prompt", "routing_config", "stream_options"]) assert.throws(() => validateNativeRequest({ input: "x", [key]: null }, config()), { code: "unsupported_parameter", param: key });
   assert.throws(() => validateNativeRequest({ input: "x", mystery: "PRIVATE" }, config()), { code: "unknown_parameter" });
 });
 test("function definitions preserve native nullable fields and validate strict schemas without inventing strictness", () => {

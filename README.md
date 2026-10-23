@@ -2,7 +2,7 @@
 
 A dependency-free Node.js adapter (loopback by default; opt-in LAN binding and native TLS): **WorkBuddy Chat Completions → Azure Responses → Chat Completions**. Azure performs inference; this is not an offline model or a complete implementation of either API. It targets explicitly configured GPT-6 variants, keeps Chat-history replay stateless, and makes unsupported semantic requests fail locally instead of silently changing them.
 
-**Evidence boundary:** The integrated Linux/shared-core offline suite passed **354 of 358 tests (4 Linux-only skips, 0 failures)** on Windows with Node **24.14.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>). The [2026-10-23 review](<docs/review-2026-10-23.md>) records the current open findings and the phase plan.
+**Evidence boundary:** The integrated Linux/shared-core offline suite passed **366 of 370 tests (4 Linux-only skips, 0 failures)** on Windows with Node **24.14.0** and **22.22.2**; syntax checks passed on both. Historical main-branch results were 131/131. These Windows checks do **not** establish actual Linux/systemd execution. See the [validation record](<docs/validation.md>) for separately recorded checks and environment boundaries. Node 22/24 Windows/Linux CI is configured; no hosted-CI, Linux execution, installed WorkBuddy, Azure deployment, cache savings, or real workload acceptance is claimed. See the [approval-gated acceptance plan](<docs/acceptance.md>), [implemented contract and official evidence](<docs/compatibility.md>), [staged compatibility plan](<docs/staged-compatibility.md>), and [F01–F21 disposition](<docs/review-disposition.md>). The [2026-10-23 review](<docs/review-2026-10-23.md>) records the current open findings and the phase plan.
 
 ## Requirements and migration
 
@@ -88,17 +88,23 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/models
 to the Chat route; the outbound target is the configured origin plus `/openai/v1/responses`, and client-supplied Azure or session headers are
 never forwarded.
 
-The route is stateless and deny-by-default. The accepted top-level fields are `model`, `input`, `instructions`, `stream`, `max_output_tokens`,
-`reasoning`, `tools`, `tool_choice`, `parallel_tool_calls`, `text`, `store` and `background` (false/null only). Hosted tools, input media,
-file/vector-store/container IDs and MCP servers require an explicit per-alias grant in `BRIDGE_NATIVE_POLICIES`; plain function tools need no
-grant. Unknown fields fail locally. Exact inert defaults (`metadata:{}`, `include:[]`, `truncation:"disabled"`, `top_logprobs:0`,
-`service_tier:"auto"`, `temperature:1`, `top_p:1`, `parallel_tool_calls:null`, `text:{}`) are dropped; every other deferred or enabled
-value returns `unsupported_parameter` rather than being forwarded. Empty `input` is rejected locally. `BRIDGE_INSTRUCTION_POLICY` applies
-to native input exactly as it does on the Chat route.
+The route is stateless and deny-by-default. Every field added in this revision is nullable: `null` means unset and is never forwarded. Unknown fields fail locally,
+and exact inert defaults (`metadata:{}`, `include:[]`, `truncation:"disabled"`, `top_logprobs:0`, `service_tier:"auto"`, `temperature:1`, `top_p:1`) are dropped
+rather than forwarded. Hosted tools, input media, file/vector-store/container IDs and MCP servers require an explicit per-alias grant in `BRIDGE_NATIVE_POLICIES`;
+plain function tools need no grant. `include:["reasoning.encrypted_content"]` is supported end to end: encrypted reasoning items are relayed untouched and are never
+parsed, logged or persisted. `BRIDGE_INSTRUCTION_POLICY` applies to native input exactly as it does on the Chat route.
+
+- Fully forwarded when valid: `model`, `input`, `instructions`, `stream`, `max_output_tokens`, `reasoning`, `tools`, `tool_choice`, `parallel_tool_calls`, `text`,
+  `prompt_cache_key`, `prompt_cache_options`, `prompt_cache_retention`, `metadata`, `safety_identifier`, `user`, `max_tool_calls`, `service_tier` and `truncation`.
+- Conditionally gated: `store` needs the three independent opt-ins below and `background` stays false/null; `temperature` and `top_p` require the profile's
+  `samplingEfforts` at the effective effort, where an exact `1` is inert and dropped first; `prompt_cache_breakpoint:{mode:"explicit"}` requires `cacheBreakpoints`
+  on the profile and is rejected on PTU-M; `include` admits at most 16 known values, and a tool-scoped value requires that tool on the same request; `top_logprobs`
+  requires `include:["message.output_text.logprobs"]`.
+- Rejected locally: `prompt`, chaining (`previous_response_id`, `conversation`, `agent_reference`, `agent_session_id`), `background:true`, and the
+  retrieve/cancel/delete routes.
 
 Provider storage needs three independent opt-ins: `BRIDGE_ALLOW_STORE=true`, `nativePolicies[alias].allowStore`, and `store:true` on the
-request. Background jobs, response/conversation chaining, `include`, and the retrieve/delete/cancel routes are not implemented;
-`background:true`, `previous_response_id`, `conversation` and non-empty `include` are rejected locally.
+request.
 
 Streaming relays native event types, metadata, ordering and numeric usage. It never fabricates Chat chunks or `[DONE]`, and a mid-stream
 failure emits one bounded `bridge.error` event. Tool calls are validated against the request's declared tools and grants, and are never
@@ -138,7 +144,7 @@ The [compatibility contract](<docs/compatibility.md>) enumerates supported, reje
 
 ## GPT-6 cache controls and cost
 
-The bridge validates `prompt_cache_key`, `prompt_cache_options: {mode: "implicit"|"explicit", ttl: "30m"}`, and supported content-block `prompt_cache_breakpoint: {mode: "explicit"}`. The bridge does not insert automatic explicit breakpoints. Optional environment defaults are `BRIDGE_PROMPT_CACHE_KEY` and JSON `BRIDGE_PROMPT_CACHE_OPTIONS`. Legacy `prompt_cache_retention` is rejected; `24h` is not the GPT-6 fix.
+The bridge validates `prompt_cache_key`, `prompt_cache_options: {mode: "implicit"|"explicit", ttl: "30m"}`, and supported content-block `prompt_cache_breakpoint: {mode: "explicit"}`. The bridge does not insert automatic explicit breakpoints. Optional environment defaults are `BRIDGE_PROMPT_CACHE_KEY` and JSON `BRIDGE_PROMPT_CACHE_OPTIONS`. On the Chat route, legacy `prompt_cache_retention` is rejected (`24h` is not the GPT-6 fix); the native route forwards `"in_memory"` or `"24h"` as an explicit field.
 
 For Standard pay-as-you-go, explicit mode **without breakpoints** disables caching and cache-write charges. Implicit mode uses Azure's default policy plus supplied breakpoints. PTU-M supports automatic caching, but not explicit breakpoints, explicit no-cache policy, or cache-write counters; declare `profile.deploymentType: "ptu-m"` to enforce this locally.
 
