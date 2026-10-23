@@ -19,6 +19,7 @@ two results are not directly comparable in count.
 | Node **v24.14.0**, after the Phase 3A fixes | 370 | 366 | 0 / 0 / 4 | 8.5 s |
 | Node **v22.22.2**, after the Phase 3A fixes | 370 | 366 | 0 / 0 / 4 | 8.7 s |
 | Node **v24.14.0**, after the Phase 4 harness | 379 | 369 | 0 / 0 / 10 | 8.6 s |
+| Node **v24.14.0**, after the Phase 4 run and routing headers | 383 | 379 | 0 / 0 / 4 | 8.7 s |
 
 The four skips are the Linux-only cases in
 [bridge.linux.test.js](<../bridge.linux.test.js>), so these Windows runs do not
