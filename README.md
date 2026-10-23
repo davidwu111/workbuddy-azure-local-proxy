@@ -91,7 +91,9 @@ never forwarded.
 The route is stateless and deny-by-default. Every field added in this revision is nullable: `null` means unset and is never forwarded. Unknown fields fail locally,
 and exact inert defaults (`metadata:{}`, `include:[]`, `truncation:"disabled"`, `top_logprobs:0`, `service_tier:"auto"`, `temperature:1`, `top_p:1`) are dropped
 rather than forwarded. Hosted tools, input media, file/vector-store/container IDs and MCP servers require an explicit per-alias grant in `BRIDGE_NATIVE_POLICIES`;
-plain function tools need no grant. `include:["reasoning.encrypted_content"]` is supported end to end: encrypted reasoning items are relayed untouched and are never
+plain function tools need no grant. Image generation additionally needs an operator-supplied routing header, `models.<alias>.nativeHeaders`
+setting `x-ms-oai-image-generation-deployment`: the bridge forwards no client headers, so that value can only come from configuration, and
+startup fails if the grant is present without it. `include:["reasoning.encrypted_content"]` is supported end to end: encrypted reasoning items are relayed untouched and are never
 parsed, logged or persisted. `BRIDGE_INSTRUCTION_POLICY` applies to native input exactly as it does on the Chat route.
 
 - Fully forwarded when valid: `model`, `input`, `instructions`, `stream`, `max_output_tokens`, `reasoning`, `tools`, `tool_choice`, `parallel_tool_calls`, `text`,

@@ -159,7 +159,7 @@ Three native-shape observations from one authorised capture run on 2026-10-23 wi
 
 - `response.function_call_arguments.done` carries `arguments` but not `name`; the name belongs to the function-call item, so the relay accepts `name` only as an optional string when a provider sends it.
 - Output logprobs (`include:["message.output_text.logprobs"]` with `top_logprobs`) are rejected by that reasoning deployment with `unsupported_parameter` on `include` and the message `logprobs are not supported with reasoning models.`
-- Image generation requires the provider routing header `x-ms-oai-image-generation-deployment`, which the bridge does not send, so image generation does not work through this bridge against Azure as configured.
+- Image generation requires the provider routing header `x-ms-oai-image-generation-deployment`. Since the bridge drops every client header, the value comes from operator configuration only: `models.<alias>.nativeHeaders` in the model map, allowlisted to that single header name and sent only when the request declares an `image_generation` tool. Granting `image-generation` without it fails startup.
 
 ## Stateless continuity boundary and deferred architecture
 

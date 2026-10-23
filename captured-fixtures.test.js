@@ -54,7 +54,8 @@ function config(extra = {}) {
   return validateConfig({ azureBase: "https://example.invalid", approvedOrigins: ["https://example.invalid"], azureApiKey: "fixture-upstream", proxyToken: "fixture-local", defaultModel: "local", models: { local: { deployment: "deployment", variant: "gpt-6-luna", version: "v" } }, ...extra });
 }
 function imageConfig(alias, policy) {
-  return validateConfig({ azureBase: "https://example.invalid", approvedOrigins: ["https://example.invalid"], azureApiKey: "fixture-upstream", proxyToken: "fixture-local", defaultModel: alias, models: { [alias]: { deployment: "deployment", variant: "gpt-6-luna", version: "v", profile: { images: true } } }, nativePolicies: { [alias]: policy } });
+  // An image-generation grant requires the operator-configured routing header, so the fixture declares one.
+  return validateConfig({ azureBase: "https://example.invalid", approvedOrigins: ["https://example.invalid"], azureApiKey: "fixture-upstream", proxyToken: "fixture-local", defaultModel: alias, models: { [alias]: { deployment: "deployment", variant: "gpt-6-luna", version: "v", profile: { images: true }, nativeHeaders: { "x-ms-oai-image-generation-deployment": "img-deploy" } } }, nativePolicies: { [alias]: policy } });
 }
 function reasoningPolicy() {
   return createNativeResponsePolicy(validateNativeRequest({ input: "x", include: ["reasoning.encrypted_content"] }, config()));

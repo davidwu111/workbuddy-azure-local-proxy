@@ -407,6 +407,8 @@ function validateNativeRequest(original, config) {
   const names = tools.filter(tool => tool._nativeKind === "function").map(tool => tool.name);
   const customNames = tools.filter(tool => tool._nativeKind === "custom").map(tool => tool.name);
   const declared = Object.freeze([...new Set(tools.filter(tool => tool._nativeKind !== "function").map(tool => tool._nativeKind === "custom" ? "custom-tool" : tool._nativeKind))]);
+  // A routing header is only sent when the request actually declares the feature it routes.
+  const routingHeaders = declared.includes("image-generation") ? route.nativeHeaders ?? Object.freeze({}) : Object.freeze({});
   const streaming = body.stream === true;
   // Azure documents image-generation streaming as unsupported; require an explicit operator assertion.
   if (streaming && declared.includes("image-generation") && !profile.verifiedCapabilities.includes("image-generation-streaming")) fail("stream", "unsupported_parameter");
@@ -460,7 +462,7 @@ function validateNativeRequest(original, config) {
     scope: Object.freeze(requestScope(tools)),
     profile, maxItems, maxIdentityBytes: Math.min(config.limits.sseBufferBytes, config.limits.responseBytes),
   });
-  return Object.freeze({ alias, route, payload, permissions });
+  return Object.freeze({ alias, route, payload, permissions, routingHeaders });
 }
 function createNativeResponsePolicy(request) {
   const p = request.permissions, profile = p.profile, scope = p.scope;

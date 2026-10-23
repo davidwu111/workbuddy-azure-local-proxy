@@ -121,6 +121,19 @@ test("native image input requires the same alias to enable Chat image capability
   const images = { deployment: "arbitrary-deployment", variant: "gpt-6-luna", version: "fixture-version", profile: { images: true } };
   assert.deepEqual(validateConfig(raw({ ...grant, models: { local: images } })).nativePolicies.local.features, ["image-input"]);
 });
+test("native routing headers are allowlisted, normalized and required for image generation", () => {
+  const header = "x-ms-oai-image-generation-deployment";
+  const model = nativeHeaders => ({ deployment: "arbitrary-deployment", variant: "gpt-6-luna", version: "fixture-version", nativeHeaders });
+  assert.equal(validateConfig(raw({ models: { local: model({ [header]: "img-deploy" }) } })).models.local.nativeHeaders[header], "img-deploy");
+  assert.deepEqual(Object.keys(validateConfig(raw({ models: { local: model({ "X-MS-OAI-Image-Generation-Deployment": "img-deploy" }) } })).models.local.nativeHeaders), [header]);
+  assert.deepEqual(validateConfig(raw()).models.local.nativeHeaders, {});
+  for (const name of ["x-ms-custom", "x-ms-oai-image-generation-deployment-extra"]) assert.throws(() => validateConfig(raw({ models: { local: model({ [name]: "value" }) } })), { code: "INVALID_CONFIG", param: `models.local.nativeHeaders.${name}` }, name);
+  for (const value of ["", "-leading", "with space", "a".repeat(129), 7]) assert.throws(() => validateConfig(raw({ models: { local: model({ [header]: value }) } })), { code: "INVALID_CONFIG", param: `models.local.nativeHeaders.${header}` }, JSON.stringify(value));
+  const grant = { features: ["image-generation"], imageModels: ["gpt-image-1"] };
+  assert.throws(() => validateConfig(raw({ nativePolicies: { local: grant } })), { code: "INVALID_CONFIG", param: "models.local.nativeHeaders" });
+  assert.deepEqual(validateConfig(raw({ nativePolicies: { local: grant }, models: { local: model({ [header]: "img-deploy" }) } })).nativePolicies.local.features, ["image-generation"]);
+  assert.notEqual(validateConfig(raw({ models: { local: model({ [header]: "img-a" }) } })).configId, validateConfig(raw({ models: { local: model({ [header]: "img-b" }) } })).configId);
+});
 test("localhost HTTP requires an explicit isolated seam", () => {
   const mock = raw({ azureBase: "http://127.0.0.1:1234", approvedOrigins: ["http://127.0.0.1:1234"] });
   assert.throws(() => validateConfig(mock), /HTTPS/);

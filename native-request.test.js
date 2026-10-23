@@ -192,7 +192,7 @@ test("native forced tool choice uses name at the root and never the Chat functio
   assert.throws(() => validateNativeRequest({ input: "x", tools: [tool()], tool_choice: { type: "function", name: "other" } }, enabled));
 });
 test("operator-enabled tools validate all supported native request groups and resources", () => {
-  const native = config({ models: { local: { deployment: "deployment", variant: "gpt-6-luna", version: "v", profile: { images: true } } }, nativePolicies: { local: { features: ["custom-tool", "web-search", "file-search", "code-interpreter", "image-generation", "mcp", "image-input", "file-input"], customToolNames: ["lookup", "grammar"], vectorStoreIds: ["vs_1"], containerIds: ["ctr_1", "auto"], fileIds: ["file_1"], mediaUrls: ["https://media.example/image.png"], imageModels: ["gpt-image-1"], mcpServers: [{ label: "tools", url: "https://mcp.example/api", toolNames: ["search"] }] } } });
+  const native = config({ models: { local: { deployment: "deployment", variant: "gpt-6-luna", version: "v", profile: { images: true }, nativeHeaders: { "x-ms-oai-image-generation-deployment": "img-deploy" } } }, nativePolicies: { local: { features: ["custom-tool", "web-search", "file-search", "code-interpreter", "image-generation", "mcp", "image-input", "file-input"], customToolNames: ["lookup", "grammar"], vectorStoreIds: ["vs_1"], containerIds: ["ctr_1", "auto"], fileIds: ["file_1"], mediaUrls: ["https://media.example/image.png"], imageModels: ["gpt-image-1"], mcpServers: [{ label: "tools", url: "https://mcp.example/api", toolNames: ["search"] }] } } });
   const tools = [tool(), { type: "custom", name: "grammar", format: { type: "grammar", syntax: "lark", definition: "start: WORD" } }, { type: "web_search_preview", search_context_size: "medium" }, { type: "file_search", vector_store_ids: ["vs_1"], max_num_results: 5 }, { type: "code_interpreter", container: "ctr_1" }, { type: "image_generation", model: "gpt-image-1", quality: "medium" }, { type: "mcp", server_label: "tools", server_url: "https://mcp.example/api", allowed_tools: ["search"], require_approval: "always" }];
   const request = validateNativeRequest({ input: [{ role: "user", content: [{ type: "input_text", text: "inspect" }, { type: "input_image", image_url: "https://media.example/image.png", detail: "auto" }, { type: "input_file", file_id: "file_1" }] }], tools }, native);
   assert.deepEqual(request.payload.tools, tools); assert.equal(request.payload.input[0].content[1].image_url, "https://media.example/image.png");
@@ -214,11 +214,22 @@ test("MCP requires an explicit allowlist and auto-container needs an explicit au
 });
 test("image-generation streaming needs an explicit verified capability assertion", () => {
   const base = { features: ["image-generation"], imageModels: ["gpt-image-1"] };
+  const model = { deployment: "deployment", variant: "gpt-6-luna", version: "v", nativeHeaders: { "x-ms-oai-image-generation-deployment": "img-deploy" } };
   const tools = [{ type: "image_generation", model: "gpt-image-1" }];
-  assert.throws(() => validateNativeRequest({ input: "x", stream: true, tools }, config({ nativePolicies: { local: base } })), { code: "unsupported_parameter", param: "stream" });
-  assert.throws(() => validateNativeRequest({ input: "x", tools: [{ type: "image_generation", partial_images: 2 }] }, config({ nativePolicies: { local: base } })), { code: "unsupported_parameter" });
-  const verified = config({ nativePolicies: { local: { ...base, verifiedCapabilities: ["image-generation-streaming"] } } });
+  assert.throws(() => validateNativeRequest({ input: "x", stream: true, tools }, config({ models: { local: model }, nativePolicies: { local: base } })), { code: "unsupported_parameter", param: "stream" });
+  assert.throws(() => validateNativeRequest({ input: "x", tools: [{ type: "image_generation", partial_images: 2 }] }, config({ models: { local: model }, nativePolicies: { local: base } })), { code: "unsupported_parameter" });
+  const verified = config({ models: { local: model }, nativePolicies: { local: { ...base, verifiedCapabilities: ["image-generation-streaming"] } } });
   assert.ok(validateNativeRequest({ input: "x", stream: true, tools }, verified));
+});
+test("routing headers are attached only when image generation is declared", () => {
+  const cfg = config({ nativePolicies: { local: { features: ["image-generation"], imageModels: ["gpt-image-1"] } },
+    models: { local: { deployment: "deployment", variant: "gpt-6-luna", version: "v", nativeHeaders: { "x-ms-oai-image-generation-deployment": "img-deploy" } } } });
+  const r = validateNativeRequest({ input: "x", tools: [{ type: "image_generation", model: "gpt-image-1" }] }, cfg);
+  assert.equal(r.routingHeaders["x-ms-oai-image-generation-deployment"], "img-deploy");
+  assert.ok(Object.isFrozen(r.routingHeaders));
+  const text = validateNativeRequest({ input: "x" }, cfg);
+  assert.deepEqual(text.routingHeaders, {});
+  assert.ok(Object.isFrozen(text.routingHeaders));
 });
 test("declaring profile permission alone cannot authorize hosted output items", () => {
   const enabled = config({ nativePolicies: { local: { features: ["web-search"], vectorStoreIds: ["vs_1"] } } });

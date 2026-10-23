@@ -141,7 +141,7 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
   const tlsOptions = validateListenerTls(config);
   const server = (tlsOptions ? https : http).createServer(tlsOptions ?? {}, async (req, res) => {
     const started = Date.now(), requestId = crypto.randomUUID();
-    let path = "unmatched", outcome = "local_error", firstTokenMs, payload, alias, upstreamRequestId, usage, upstream, normalizedFields, finishReason;
+    let path = "unmatched", outcome = "local_error", firstTokenMs, payload, routingHeaders, alias, upstreamRequestId, usage, upstream, normalizedFields, finishReason;
     let controller, totalTimer, writer, nativeWriter, nativeMode = false, entry, body, stage = "routing", validation = {}, bytesOut, queuedFor, nativeCode, streamEventName;
     res.setHeader("x-request-id", requestId);
     try {
@@ -172,7 +172,7 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       stage = "request_conversion";
       if (!nativeMode && body && typeof body === "object" && !Array.isArray(body)) alias = Object.hasOwn(body, "model") ? (typeof body.model === "string" && Object.hasOwn(config.models, body.model) ? body.model : undefined) : config.defaultModel;
       if (nativeMode) {
-        const validated = validateNativeRequest(body, config); alias = validated.alias; payload = validated.payload;
+        const validated = validateNativeRequest(body, config); alias = validated.alias; payload = validated.payload; routingHeaders = validated.routingHeaders;
         entry.nativePolicy = createNativeResponsePolicy(validated);
       } else payload = toResponsesRequest(body, config);
       if (!nativeMode) normalizedFields = [...new Set([...normalizeChatDefaults(body).normalizedFields,
@@ -182,7 +182,7 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       const encodedRequest = JSON.stringify(payload);
       if (nativeMode && Buffer.byteLength(encodedRequest) > config.limits.requestBytes) throw requestError("request_too_large", "Encoded native request exceeds configured byte limit", 413);
       const fetchPromise = Promise.resolve(fetchImpl(new URL("/openai/v1/responses", config.azureBase), { method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", Accept: payload.stream ? "text/event-stream" : "application/json", "api-key": config.azureApiKey }, body: encodedRequest, signal: controller.signal }));
+        headers: { "Content-Type": "application/json", Accept: payload.stream ? "text/event-stream" : "application/json", "api-key": config.azureApiKey, ...(routingHeaders ?? {}) }, body: encodedRequest, signal: controller.signal }));
       // An injected implementation ignoring abort can resolve after our deadline;
       // dispose its late body without waiting for an uncooperative cancel promise.
       fetchPromise.then(value => { if (controller.signal.aborted) { try { Promise.resolve(value?.body?.cancel()).catch(() => {}); } catch {} } }, () => {});

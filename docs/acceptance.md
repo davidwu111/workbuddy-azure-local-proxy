@@ -86,7 +86,7 @@ An authorised native capture run was made once on 2026-10-23 under approval refe
 | `flat-error` | `inconclusive` | `HTTP 400` with a flat `unsupported_parameter` body on `include`; no SSE `error` event was produced for the pre-flight validation failure, so the flat SSE error event remains unobserved. |
 | `reasoning-nullable-summary` | `inconclusive` | No reasoning item appeared in the stream for a one-word answer, and an item-level null summary was never observed. |
 | `annotations-null` | `inconclusive` | Only `annotations: []` and `logprobs: []` were observed; an explicit `null` was not. |
-| `image-streaming` | `fail` | `HTTP 400`: `imagegen deployment must be provided through header: x-ms-oai-image-generation-deployment`; the bridge does not set that header. |
+| `image-streaming` | `fail` | `HTTP 400`: `imagegen deployment must be provided through header: x-ms-oai-image-generation-deployment`. The header is now configurable per alias (`nativeHeaders`) but was not configured for this run, so the shape is still outstanding. |
 | `output-boundary` | `pass` | `max_output_tokens:128000` was accepted with `HTTP 200` and usage `input_tokens 13`, `output_tokens 18`, `reasoning_tokens 11`. |
 | `multi-call` | `pass` | After `name` was made optional on `response.function_call_arguments.done`, the same request produced 11 events and two function calls (`probe_a`, `probe_b`) with terminal status `completed`. |
 

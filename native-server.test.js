@@ -222,6 +222,18 @@ test("annotations and returned resources stay inside the request-scoped grant", 
   output = [{ type: "file_search_call", id: "fs1", status: "completed", queries: ["q"], results: [{ file_id: "f1", vector_store_id: "vs_1" }] }];
   assert.equal((await f.post({ input: "x", tools: [search] })).status, 200);
 });
+test("image generation routing header is configured once server-side and never client-controlled", { timeout: 5000 }, async t => {
+  let sent; const extra = { nativePolicies: { local: { features: ["image-generation"], imageModels: ["gpt-image-1"] } },
+    models: { local: { deployment: "deployment", variant: "gpt-6-luna", version: "v", nativeHeaders: { "x-ms-oai-image-generation-deployment": "img-deploy" } } } };
+  const f = await fixture(t, (_url, opts) => { sent = opts.headers; return json(completed()); }, extra);
+  const tools = [{ type: "image_generation", model: "gpt-image-1" }];
+  assert.equal((await f.post({ input: "x", tools })).status, 200);
+  assert.equal(sent["x-ms-oai-image-generation-deployment"], "img-deploy");
+  assert.equal((await f.post({ input: "x" })).status, 200);
+  assert.equal(sent["x-ms-oai-image-generation-deployment"], undefined);
+  assert.equal((await f.post({ input: "x", tools }, { headers: { "x-ms-oai-image-generation-deployment": "client-value" } })).status, 200);
+  assert.equal(sent["x-ms-oai-image-generation-deployment"], "img-deploy");
+});
 test("native create uses the existing TLS listener with real certificate verification", { timeout: 5000 }, async t => {
   const certPath = "test-fixtures/tls/localhost-cert.pem", keyPath = "test-fixtures/tls/localhost-key.pem";
   const f = await fixture(t, () => json(completed()), { tlsCert: certPath, tlsKey: keyPath });
