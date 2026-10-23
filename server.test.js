@@ -478,4 +478,66 @@ test("annotation-added events preserve terminal sanitized citations without warn
   assert.equal(chunks.some(value => value.error), false); assert.deepEqual(chunks.at(-1).choices[0].delta.annotations, [annotation]); assert.equal(chunks.flatMap(value => value.choices || []).map(value => value.delta?.content || "").join(""), "hello"); assert.equal(frames(raw).filter(value => value === "[DONE]").length, 1);
 });
 
+test("queued is a tolerated lifecycle notification before created and never terminates a stream by itself", { timeout: 5000 }, async t => {
+  let current; const f = await fixture(t, () => stream(current));
+  current = event("response.queued", { response: { id: "resp_queued", created_at: 99 } }) + event("response.created", { response: { id: "resp_queued", created_at: 99 } }) + event("response.output_text.delta", { delta: "hello" }) + event("response.completed", { response: completed({ id: "resp_queued", created_at: 99 }) });
+  const response = await f.post(body({ stream: true })); const raw = await response.text(); const chunks = parsedFrames(raw);
+  assert.equal(response.status, 200); assert.equal(chunks.some(value => value.error), false);
+  assert.equal(chunks.flatMap(value => value.choices || []).map(value => value.delta?.content || "").join(""), "hello");
+  assert.equal(chunks.every(value => value.id === "chatcmpl-resp_queued"), true); assert.equal(chunks.every(value => value.created === 99), true);
+  assert.equal(chunks.filter(value => value.choices?.[0]?.delta?.role === "assistant").length, 1);
+  assert.equal(frames(raw).filter(value => value === "[DONE]").length, 1);
+  current = event("response.queued", { response: { id: "resp_queued", created_at: 99 } });
+  const incomplete = await (await f.post(body({ stream: true }))).text(); const incompleteChunks = parsedFrames(incomplete);
+  assert.ok(incompleteChunks.some(value => value.error)); assert.equal(incompleteChunks.some(value => value.choices?.[0]?.finish_reason === "stop"), false);
+  assert.equal(frames(incomplete).filter(value => value === "[DONE]").length, 1);
+  current = event("response.queued", { response: "not-an-object" }) + event("response.completed", { response: completed() });
+  const malformed = await (await f.post(body({ stream: true }))).text();
+  assert.ok(parsedFrames(malformed).some(value => value.error));
+});
+
+test("raw reasoning events are accepted, discarded, unlogged and cannot alter reasoning_content", { timeout: 5000 }, async t => {
+  const raw = "RAW_REASONING_PRIVATE_MARKER";
+  const output = [{ type: "message", content: [{ type: "output_text", text: "hello" }] }, { type: "reasoning", summary: [{ type: "summary_text", text: "public summary" }] }];
+  const text = event("response.created", { response: { id: "resp_fixture", created_at: 123 } }) + event("response.reasoning_text.delta", { delta: raw }) + event("response.reasoning_text.done", { text: raw }) + event("response.reasoning_summary_text.delta", { delta: "public summary" }) + event("response.completed", { response: completed({ output }) });
+  const f = await fixture(t, () => stream(text));
+  const rawResponse = await (await f.post(body({ stream: true }))).text(); const chunks = parsedFrames(rawResponse); const choices = chunks.flatMap(value => value.choices || []);
+  assert.equal(chunks.some(value => value.error), false); assert.equal(rawResponse.includes(raw), false); assert.equal(JSON.stringify(chunks).includes(raw), false);
+  assert.equal(choices.map(value => value.delta?.content || "").join(""), "hello");
+  assert.equal(choices.map(value => value.delta?.reasoning_content || "").join(""), "public summary");
+  assert.equal(JSON.stringify(f.logs).includes(raw), false);
+  assert.equal(frames(rawResponse).filter(value => value === "[DONE]").length, 1);
+});
+
+test("malformed raw reasoning events still fail visibly", { timeout: 5000 }, async t => {
+  let current; const f = await fixture(t, () => stream(current));
+  for (current of [event("response.reasoning_text.delta", { delta: 42 }), event("response.reasoning_text.done", { text: { nested: "marker" } })]) {
+    const raw = await (await f.post(body({ stream: true }))).text(); const chunks = parsedFrames(raw);
+    assert.ok(chunks.some(value => value.error)); assert.equal(chunks.some(value => value.choices?.[0]?.finish_reason === "stop"), false);
+    assert.equal(frames(raw).filter(value => value === "[DONE]").length, 1);
+  }
+});
+
+test("unknown events still fail and expose only a sanitized event name in the request log", { timeout: 5000 }, async t => {
+  const f = await fixture(t, () => stream(event("response.sunshine.delta", { delta: "opaque material" })));
+  const raw = await (await f.post(body({ stream: true }))).text(); const error = parsedFrames(raw).find(value => value.error);
+  assert.ok(error); assert.deepEqual(Object.keys(error.error).sort(), ["code", "message", "type"]);
+  const record = f.logs.at(-1);
+  assert.equal(record.eventName, "response.sunshine.delta"); assert.equal(record.outcome, "stream_error");
+  assert.equal(JSON.stringify(record).includes("opaque material"), false);
+});
+
+test("secret-bearing and oversized event names are never logged verbatim", { timeout: 5000 }, async t => {
+  let current; const f = await fixture(t, () => stream(current));
+  const oversized = "response." + "x".repeat(130);
+  for (current of [event(`response.${UPSTREAM_KEY}`, {}), event(oversized, {})]) {
+    const raw = await (await f.post(body({ stream: true }))).text();
+    assert.ok(parsedFrames(raw).some(value => value.error));
+    const record = f.logs.at(-1);
+    assert.equal(Object.hasOwn(record, "eventName"), false);
+    assert.equal(JSON.stringify(record).includes(UPSTREAM_KEY), false);
+    assert.equal(JSON.stringify(record).includes("xxxxx"), false);
+  }
+});
+
 module.exports = { fixture, event, stream, json, completed, functionCall, functionTools, body, frames, parsedFrames, toolFrames };

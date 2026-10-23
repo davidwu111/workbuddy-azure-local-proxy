@@ -10,7 +10,9 @@ const { safeRecord } = require("./logger");
 const { normalizeChatDefaults } = require("./chat-contract");
 const { validationDiagnostics } = require("./diagnostics");
 const { ByteStore, transportError, waitWithTimeout, readBoundedBody, SseWriter, streamResponse } = require("./sse");
-const SERVICE = "azure-responses-bridge", PROTOCOL = "chat-to-responses-v1", BUILD = "adapter-v2.10-linux";
+const { NativeSseWriter, relayNativeSse } = require("./native-sse");
+const { validateNativeRequest, createNativeResponsePolicy, validateNativeResponse, redactNativeResponse } = require("./native-request");
+const SERVICE = "azure-responses-bridge", PROTOCOL = "chat-to-responses-v1", BUILD = "adapter-v2.11-native-create";
 function validateListenerTls(config) {
   if (!config.tlsCert && !config.tlsKey) return undefined;
   try {
@@ -137,17 +139,21 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
   const server = (tlsOptions ? https : http).createServer(tlsOptions ?? {}, async (req, res) => {
     const started = Date.now(), requestId = crypto.randomUUID();
     let path = "unmatched", outcome = "local_error", firstTokenMs, payload, alias, upstreamRequestId, usage, upstream, normalizedFields, finishReason;
-    let controller, totalTimer, writer, entry, body, stage = "routing", validation = {}, bytesOut, queuedFor;
+    let controller, totalTimer, writer, nativeWriter, nativeMode = false, entry, body, stage = "routing", validation = {}, bytesOut, queuedFor, nativeCode, streamEventName;
     res.setHeader("x-request-id", requestId);
     try {
-      path = new URL(req.url, "http://127.0.0.1").pathname;
+      const requestUrl = new URL(req.url, "http://127.0.0.1");
+      path = requestUrl.pathname;
       if (req.method === "GET" && path === "/healthz") { outcome = "health"; sendJson(res, 200, { ...identity, status: "ok" }); return; }
       if (req.method === "GET" && path === "/readyz") { outcome = "readiness"; sendJson(res, closing ? 503 : 200, { ...identity, status: closing ? "not_ready" : "ready" }); return; }
       if (req.method === "GET" && path === "/v1/models") { outcome = "models"; sendJson(res, 200, { object: "list", data: Object.keys(config.models).map(id => ({ id, object: "model", created: 0, owned_by: "local" })) }); return; }
-      if (req.method !== "POST" || path !== "/v1/chat/completions") { sendJson(res, 404, envelope({ message: "Not found", type: "invalid_request_error", code: "not_found" })); return; }
+      const nativeRoute = req.method === "POST" && path === "/v1/responses";
+      if ((nativeRoute && !config.nativeResponses) || req.method !== "POST" || (path !== "/v1/chat/completions" && !nativeRoute)) { sendJson(res, 404, envelope({ message: "Not found", type: "invalid_request_error", code: "not_found" })); return; }
+      nativeMode = nativeRoute;
       if (closing) throw transportError("shutting_down", "Bridge is shutting down", 503);
       stage = "authentication";
       if (!hasAuth(req, config.proxyToken)) throw Object.assign(transportError("invalid_api_key", "Invalid or missing local proxy credential", 401), { type: "authentication_error" });
+      if (nativeMode && requestUrl.search) throw Object.assign(requestError("unsupported_parameter", "Native query controls are not implemented", 400), { param: "query" });
       stage = "capacity";
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] || "")) throw Object.assign(transportError("unsupported_media_type", "Request Content-Type must be application/json", 415), { type: "invalid_request_error" });
       controller = new AbortController(); entry = { controller, res }; active.add(entry);
@@ -161,14 +167,19 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       stage = "upload";
       body = await readRequest(req, { signal: controller.signal, maxBytes: config.limits.requestBytes, uploadMs: config.timeouts.uploadMs });
       stage = "request_conversion";
-      if (body && typeof body === "object" && !Array.isArray(body)) alias = Object.hasOwn(body, "model") ? (typeof body.model === "string" && Object.hasOwn(config.models, body.model) ? body.model : undefined) : config.defaultModel;
-      payload = toResponsesRequest(body, config);
-      normalizedFields = [...new Set([...normalizeChatDefaults(body).normalizedFields,
+      if (!nativeMode && body && typeof body === "object" && !Array.isArray(body)) alias = Object.hasOwn(body, "model") ? (typeof body.model === "string" && Object.hasOwn(config.models, body.model) ? body.model : undefined) : config.defaultModel;
+      if (nativeMode) {
+        const validated = validateNativeRequest(body, config); alias = validated.alias; payload = validated.payload;
+        entry.nativePolicy = createNativeResponsePolicy(validated);
+      } else payload = toResponsesRequest(body, config);
+      if (!nativeMode) normalizedFields = [...new Set([...normalizeChatDefaults(body).normalizedFields,
         ...["temperature", "top_p", "prompt_cache_key", "parallel_tool_calls"].filter(name => Object.hasOwn(body, name) && !Object.hasOwn(payload, name)),
         ...ignoredClientFields(body, config)])];
       stage = "upstream_headers";
+      const encodedRequest = JSON.stringify(payload);
+      if (nativeMode && Buffer.byteLength(encodedRequest) > config.limits.requestBytes) throw requestError("request_too_large", "Encoded native request exceeds configured byte limit", 413);
       const fetchPromise = Promise.resolve(fetchImpl(new URL("/openai/v1/responses", config.azureBase), { method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", Accept: payload.stream ? "text/event-stream" : "application/json", "api-key": config.azureApiKey }, body: JSON.stringify(payload), signal: controller.signal }));
+        headers: { "Content-Type": "application/json", Accept: payload.stream ? "text/event-stream" : "application/json", "api-key": config.azureApiKey }, body: encodedRequest, signal: controller.signal }));
       // An injected implementation ignoring abort can resolve after our deadline;
       // dispose its late body without waiting for an uncooperative cancel promise.
       fetchPromise.then(value => { if (controller.signal.aborted) { try { Promise.resolve(value?.body?.cancel()).catch(() => {}); } catch {} } }, () => {});
@@ -186,8 +197,26 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       if (payload.stream) {
         stage = "streaming";
         if (mime !== "text/event-stream") throw transportError("invalid_upstream_content_type", "Upstream streaming Content-Type must be text/event-stream");
+        if (nativeMode) {
+          nativeWriter = new NativeSseWriter(res, { signal: controller.signal, stallMs: config.timeouts.downstreamStallMs, maxBytes: config.limits.responseBytes });
+          const result = await relayNativeSse(upstream, res, { writer: nativeWriter, signal: controller.signal,
+            limits: { responseBytes: config.limits.responseBytes, sseLineBytes: config.limits.sseLineBytes, sseEventBytes: config.limits.sseEventBytes, sseBufferBytes: config.limits.sseBufferBytes, downstreamBytes: config.limits.responseBytes },
+            timeouts: { upstreamIdleMs: config.timeouts.upstreamIdleMs, downstreamStallMs: config.timeouts.downstreamStallMs, policyMs: config.timeouts.upstreamIdleMs },
+            beforeEmit: (info, eventPayload) => {
+              const allowed = entry.nativePolicy(info, eventPayload);
+              if ((info.category.startsWith("lifecycle") || info.name === "response.cancelled") && eventPayload.response?.usage !== undefined) usage = eventPayload.response.usage;
+              return allowed;
+            },
+            secrets: [config.azureApiKey, config.proxyToken, config.azureBase],
+            onDiagnostic: info => {
+              if (info.code) nativeCode = info.code;
+              if (["response.output_text.delta", "response.refusal.delta", "response.reasoning_summary_text.delta", "response.function_call_arguments.delta"].includes(info.eventName)) firstTokenMs ??= Date.now() - started;
+            },
+          });
+          outcome = result.outcome === "error" ? "upstream_stream_error" : result.outcome.slice(9); bytesOut = result.bytesOut; return;
+        }
         writer = new SseWriter(res, { signal: controller.signal, stallMs: config.timeouts.downstreamStallMs, maxBytes: config.limits.responseBytes }); writer.start();
-        const result = await streamResponse(upstream, writer, { alias, limits: config.limits, timeouts: config.timeouts, signal: controller.signal,
+        const result = await streamResponse(upstream, writer, { alias, limits: config.limits, timeouts: config.timeouts, signal: controller.signal, secrets: secretsToHide,
           includeUsage: body.stream_options?.include_usage === true, validateTools: value => validateTools(value, payload), onUsage: value => { usage = value; }, onFirstToken: () => { firstTokenMs ??= Date.now() - started; } });
         outcome = result.outcome; finishReason = result.finishReason; usage = result.rawUsage;
         // Bytes actually written downstream: distinguishes "we sent nothing"
@@ -199,6 +228,15 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       const raw = await read(config.limits.jsonBytes); let response;
       try { response = JSON.parse(raw); } catch { throw transportError("invalid_upstream_json", "Upstream response must be valid JSON"); }
       stage = "response_conversion";
+      if (nativeMode) {
+        usage = response?.usage;
+        validateNativeResponse(response, entry.nativePolicy);
+        const nativeResponse = redactNativeResponse(response, [config.azureApiKey, config.proxyToken, config.azureBase]);
+        const bytes = Buffer.byteLength(JSON.stringify(nativeResponse));
+        if (bytes > config.limits.responseBytes) throw transportError("downstream_response_too_large", "Encoded native response exceeds configured byte limit");
+        bytesOut = bytes; outcome = nativeResponse.status; firstTokenMs = Date.now() - started;
+        sendJson(res, 200, nativeResponse); return;
+      }
       usage = response?.usage; validateTools(response, payload); const mapped = extractResponse(response, alias);
       if (Buffer.byteLength(JSON.stringify(mapped)) > config.limits.responseBytes) throw transportError("downstream_response_too_large", "Encoded response exceeds configured byte limit");
       finishReason = mapped.choices[0].finish_reason;
@@ -206,8 +244,14 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       firstTokenMs = Date.now() - started; sendJson(res, 200, mapped);
     } catch (error) {
       validation = validationDiagnostics(error, stage, body, [config.azureApiKey, config.proxyToken]);
-      outcome = error?.code === "client_cancelled" ? "client_cancelled" : error?.code === "shutting_down" ? "shutdown" : /timeout$/.test(error?.code || "") ? "timeout" : writer ? "stream_error" : (error?.status || 502) < 500 ? "validation_error" : "upstream_error";
-      if (writer) { if (["client_cancelled", "shutting_down"].includes(error?.code)) res.destroy(); else await writer.fail(envelope(error)); }
+      // Only the Chat stream attaches this bounded event name; payloads and text never are logged.
+      if (writer && typeof error?.eventName === "string") streamEventName = error.eventName;
+      const outcomeCode = nativeMode ? error?.failureCode ?? error?.code : error?.code;
+      if (nativeMode) nativeCode = safeToken(outcomeCode, "upstream_error");
+      outcome = outcomeCode === "client_cancelled" ? "client_cancelled" : outcomeCode === "shutting_down" ? "shutdown" : /timeout$/.test(outcomeCode || "") ? "timeout" : nativeWriter ? "native_stream_error" : writer ? "stream_error" : (error?.status || 502) < 500 ? "validation_error" : "upstream_error";
+      if (nativeWriter && res.headersSent) {
+        if (!nativeWriter.closed && !res.destroyed && !res.writableEnded) await nativeWriter.bridgeError(error);
+      } else if (writer) { if (["client_cancelled", "shutting_down"].includes(error?.code)) res.destroy(); else await writer.fail(envelope(error)); }
       else if (!res.headersSent && !res.destroyed) { res.setHeader("Connection", "close"); if (error?.status === 429) res.setHeader("retry-after", "1"); sendJson(res, error?.status >= 400 && error.status <= 599 ? error.status : 502, envelope(error)); }
       else if (!res.writableEnded) res.destroy();
     } finally {
@@ -216,8 +260,9 @@ function createBridgeServer(rawConfig, { fetchImpl = globalThis.fetch, logger = 
       entry?.cleanup(); if (entry) active.delete(entry);
       // Release the admission slot last so a queued request can take over.
       if (entry?.holdsSlot) { entry.holdsSlot = false; releaseSlot(); }
+      if (nativeWriter) bytesOut ??= nativeWriter.bytes;
       const route = config.models[alias];
-      log({ requestId, upstreamRequestId, method: req.method, path, status: res.statusCode, outcome, model: alias, deployment: route?.deployment, variant: route?.variant, version: route?.version,
+      log({ requestId, upstreamRequestId, method: req.method, path, status: res.statusCode, outcome, ...(nativeMode && nativeCode ? { code: nativeCode } : {}), ...(streamEventName ? { eventName: streamEventName } : {}), model: alias, deployment: route?.deployment, variant: route?.variant, version: route?.version,
         effort: payload?.reasoning?.effort, mode: payload?.reasoning?.mode, context: payload?.reasoning?.context, latencyMs: Date.now() - started, firstTokenMs, usage, normalizedFields, finishReason, stage, bytesOut, queuedFor, ...validation });
     }
   });

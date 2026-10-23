@@ -88,6 +88,18 @@ test("storage cache defaults and diagnostic identity are safe and deliberate", (
   assert.throws(() => validateConfig(raw({ models: { local: { deployment: "d", variant: "gpt-6-luna", version: "v", profile: { deploymentType: "ptu-m" } } },
     defaults: { cacheOptions: { mode: "explicit" } } })), /PTU-M/);
   assert.equal(validateConfig(raw()).configId, validateConfig(raw({ azureApiKey: "different-upstream", proxyToken: "different-local" })).configId);
+  assert.equal(validateConfig(raw()).nativeResponses, false);
+  assert.equal(loadConfig({ env: env({ BRIDGE_NATIVE_RESPONSES: "true" }) }).nativeResponses, true);
+  assert.equal(loadConfig({ env: env({ BRIDGE_NATIVE_RESPONSES: "false" }) }).nativeResponses, false);
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ nativeResponses: true })).configId);
+  assert.equal(validateConfig(raw()).nativePolicies.local.allowStore, false);
+  const policy = { local: { features: ["web-search"] } };
+  assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ nativePolicies: policy })).configId);
+  assert.equal(validateConfig(raw({ nativePolicies: policy })).configId, validateConfig(raw({ nativePolicies: policy })).configId);
+  assert.throws(() => validateConfig(raw({ nativePolicies: { unknown: {} } })), /nativePolicies/);
+  assert.throws(() => loadConfig({ env: env({ BRIDGE_NATIVE_POLICIES: "{" }) }), /BRIDGE_NATIVE_POLICIES/);
+  assert.deepEqual(loadConfig({ env: env({ BRIDGE_NATIVE_POLICIES: '{"local":{"features":["web-search"]}}' }) }).nativePolicies.local.features, ["web-search"]);
+  assert.throws(() => loadConfig({ env: env({ BRIDGE_NATIVE_RESPONSES: "yes" }) }), /BRIDGE_NATIVE_RESPONSES/);
   assert.notEqual(validateConfig(raw()).configId, validateConfig(raw({ samplingPolicy: "drop-defaults" })).configId);
 });
 test("localhost HTTP requires an explicit isolated seam", () => {

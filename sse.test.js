@@ -156,4 +156,45 @@ test("abort during terminal drainage immediately cleans up and destroys instead 
   for (const name of ["drain", "close", "error"]) assert.equal(res.listenerCount(name), 0);
 });
 
+test("queued lifecycle captures identity without emitting a role chunk or terminal frame", { timeout: 1000 }, async () => {
+  const queued = 'event: response.queued\ndata: {"response":{"id":"resp_q","created_at":77}}\n\n';
+  const rest = 'event: response.output_text.delta\ndata: {"delta":"hi"}\n\n' +
+    'event: response.completed\ndata: {"response":{"id":"resp_q","created_at":77,"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}}\n\n';
+  let release, entered; const gate = new Promise(resolve => { release = resolve; }); const started = new Promise(resolve => { entered = resolve; });
+  const tracked = trackedBody(n => {
+    if (n === 1) return Promise.resolve({ value: Buffer.from(queued), done: false });
+    if (n === 2) { entered(); return gate; }
+    return Promise.resolve({ done: true });
+  });
+  const res = new FakeResponse(); const writer = new SseWriter(res, { stallMs: 100 }); writer.start();
+  const work = streamResponse({ body: tracked.body }, writer, { alias: "local", limits, timeouts: { upstreamIdleMs: 500 } });
+  await started;
+  assert.equal(res.frames.length, 0, "queued must not emit a role chunk");
+  assert.equal(res.writableEnded, false, "queued must not terminate the stream");
+  release({ value: Buffer.from(rest), done: false });
+  const result = await work;
+  const output = res.frames.join("");
+  assert.equal(output.includes('"id":"chatcmpl-resp_q"'), true);
+  assert.equal(output.includes('"created":77'), true);
+  assert.equal(output.includes('"role":"assistant"'), true);
+  assert.equal(output.includes('"content":"hi"'), true);
+  assert.equal(result.outcome, "completed");
+  assert.equal(res.writableEnded, true);
+});
+
+test("raw reasoning events are validated, discarded and never emitted as Chat material", async () => {
+  const text = 'event: response.created\ndata: {"response":{"id":"resp_r","created_at":5}}\n\n' +
+    'event: response.reasoning_text.delta\ndata: {"delta":"RAW_REASONING"}\n\n' +
+    'event: response.reasoning_text.done\ndata: {"text":"RAW_REASONING"}\n\n' +
+    'event: response.completed\ndata: {"response":{"id":"resp_r","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}\n\n';
+  const tracked = trackedBody(n => Promise.resolve(n === 1 ? { value: Buffer.from(text), done: false } : { done: true }));
+  const res = new FakeResponse(); const writer = new SseWriter(res, { stallMs: 100 }); writer.start();
+  await streamResponse({ body: tracked.body }, writer, { alias: "local", limits, timeouts: { upstreamIdleMs: 100 } });
+  const output = res.frames.join("");
+  assert.equal(output.includes("RAW_REASONING"), false);
+  assert.equal(output.includes("reasoning_content"), false);
+  const malformed = trackedBody(n => Promise.resolve(n === 1 ? { value: Buffer.from('event: response.reasoning_text.delta\ndata: {"delta":5}\n\n'), done: false } : { done: true }));
+  await assert.rejects(streamResponse({ body: malformed.body }, new SseWriter(new FakeResponse(), { stallMs: 100 }), { alias: "local", limits, timeouts: { upstreamIdleMs: 100 } }), { code: "invalid_sse_reasoning_text" });
+});
+
 module.exports = { FakeResponse, fragmented, collect, limits, trackedBody };

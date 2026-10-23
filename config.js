@@ -7,6 +7,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { isIP } = require("node:net");
 const { WORKBUDDY_MESSAGE_FIELDS, validateClientMetadataFieldName } = require("./chat-contract");
+const { normalizeNativePolicies } = require("./native-permissions");
 const VARIANTS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
 const EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
 const LIMIT_DEFAULTS = Object.freeze({ requestBytes: 8 * 1024 ** 2, jsonBytes: 32 * 1024 ** 2,
@@ -101,10 +102,12 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   }
   config.defaultModel = nonempty(raw.defaultModel, "defaultModel", 128);
   if (!Object.hasOwn(config.models, config.defaultModel)) fail("defaultModel", "must identify a permitted alias");
+  config.nativePolicies = normalizeNativePolicies(raw.nativePolicies ?? Object.create(null), Object.keys(config.models));
   config.maxOutputTokens = positive(raw.maxOutputTokens ?? 128000, "maxOutputTokens", 128000);
   config.instructionPolicy = enumValue(raw.instructionPolicy ?? "reject-mixed", ["preserve", "developer", "system", "reject-mixed"], "instructionPolicy");
   config.samplingPolicy = enumValue(raw.samplingPolicy ?? "reject", ["reject", "drop-defaults"], "samplingPolicy");
   config.allowStore = bool(raw.allowStore ?? false, "allowStore");
+  config.nativeResponses = bool(raw.nativeResponses ?? false, "nativeResponses");
   if (raw.clientMetadataFields !== undefined) {
     if (!Array.isArray(raw.clientMetadataFields) || raw.clientMetadataFields.length > 16) fail("clientMetadataFields", "must be an array of at most 16 field names");
     config.clientMetadataFields = [];
@@ -151,8 +154,8 @@ function validateConfig(raw, { allowHttpLocalhostForTests = false } = {}) {
   // Never hash credential material into publicly visible identity.
   config.configId = crypto.createHash("sha256").update(JSON.stringify({ host: config.host, port: config.port, tls: Boolean(config.tlsCert), models: config.models, defaultModel: config.defaultModel,
     azureBase: config.azureBase, maxOutputTokens: config.maxOutputTokens, instructionPolicy: config.instructionPolicy,
-    samplingPolicy: config.samplingPolicy, allowStore: config.allowStore, defaults: config.defaults,
-    clientMetadataFields: config.clientMetadataFields, clientMetadataMode: config.clientMetadataMode,
+    samplingPolicy: config.samplingPolicy, allowStore: config.allowStore, nativeResponses: config.nativeResponses, defaults: config.defaults,
+    clientMetadataFields: config.clientMetadataFields, clientMetadataMode: config.clientMetadataMode, nativePolicies: config.nativePolicies,
     limits: config.limits, timeouts: config.timeouts })).digest("hex").slice(0, 16);
   return config;
 }
@@ -193,7 +196,8 @@ function loadConfig({ env = process.env, envFile, allowHttpLocalhostForTests = f
     azureApiKey: merged.AZURE_OPENAI_API_KEY, proxyToken: merged.BRIDGE_PROXY_TOKEN, models, defaultModel,
     maxOutputTokens: integerEnv(merged, "BRIDGE_MAX_OUTPUT_TOKENS", 128000),
     instructionPolicy: merged.BRIDGE_INSTRUCTION_POLICY ?? "reject-mixed", samplingPolicy: merged.BRIDGE_SAMPLING_POLICY ?? "reject",
-    allowStore: booleanEnv(merged, "BRIDGE_ALLOW_STORE", false), defaults,
+    allowStore: booleanEnv(merged, "BRIDGE_ALLOW_STORE", false), nativeResponses: booleanEnv(merged, "BRIDGE_NATIVE_RESPONSES", false), defaults,
+     nativePolicies: jsonEnv(merged, "BRIDGE_NATIVE_POLICIES", {}),
     clientMetadataFields: jsonEnv(merged, "BRIDGE_CLIENT_METADATA_FIELDS", undefined),
     clientMetadataMode: merged.BRIDGE_CLIENT_METADATA_MODE ?? "auto",
     limits: jsonEnv(merged, "BRIDGE_LIMITS", {}), timeouts: jsonEnv(merged, "BRIDGE_TIMEOUTS", {}),
